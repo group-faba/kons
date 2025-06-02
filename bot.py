@@ -1,3 +1,4 @@
+import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -10,22 +11,20 @@ from telegram.ext import (
     filters,
 )
 
-# Настройки логирования (можно убрать, если не нужно)
+# Логирование (по желанию)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-# Замените на реальный чат ID администратора, куда будут приходить заявки
-ADMIN_CHAT_ID = 123456789
+# Чат ID администратора (куда будут уходить заявки)
+ADMIN_CHAT_ID = 123456789  # замените на свой ID или перенесите в ENV
 
-# Список регионов
+# Списки регионов и отраслей
 REGIONS = ["Москва", "Санкт-Петербург", "Краснодарский край"]
-
-# Список отраслей
 INDUSTRIES = ["Психология", "Финансы", "Юриспруденция"]
 
-# Список специалистов с указанием региона и отрасли
+# Список специалистов с их параметрами
 SPECIALISTS = [
     {
         "id": "spec1",
@@ -59,22 +58,22 @@ SPECIALISTS = [
         "region": "Краснодарский край",
         "industry": "Финансы"
     },
-    # Добавьте при необходимости своих специалистов
+    # Добавьте своих специалистов при необходимости
 ]
 
 # Состояния ConversationHandler
 CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, TYPING_REQUEST = range(4)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало диалога: предлагаем выбрать регион."""
+    """Команда /start: показываем список регионов."""
     keyboard = [
         [InlineKeyboardButton(text=region, callback_data=region)]
         for region in REGIONS
     ]
-    reply = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "Выберите регион:",
-        reply_markup=reply
+        "Привет! Выберите ваш регион:",
+        reply_markup=reply_markup
     )
     return CHOOSING_REGION
 
@@ -89,10 +88,10 @@ async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         [InlineKeyboardButton(text=industry, callback_data=industry)]
         for industry in INDUSTRIES
     ]
-    reply = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
         f"Регион: {region}\n\nТеперь выберите отрасль:",
-        reply_markup=reply
+        reply_markup=reply_markup
     )
     return CHOOSING_INDUSTRY
 
@@ -119,10 +118,10 @@ async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         [InlineKeyboardButton(text=spec["name"], callback_data=spec["id"])]
         for spec in filtered
     ]
-    reply = InlineKeyboardMarkup(keyboard)
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
         f"Регион: {region}\nОтрасль: {industry}\n\nВыберите специалиста:",
-        reply_markup=reply
+        reply_markup=reply_markup
     )
     return CHOOSING_SPECIALIST
 
@@ -137,7 +136,6 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     context.user_data["specialist"] = spec
-
     await query.edit_message_text(
         f"Вы выбрали: {spec['name']}\n"
         f"{spec['description']}\n\n"
@@ -146,7 +144,7 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return TYPING_REQUEST
 
 async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получаем текст заявки и пересылаем администратору."""
+    """Получаем текст заявки и пересылаем админу."""
     text = update.message.text
     user = update.message.from_user
     region = context.user_data.get("region")
@@ -169,15 +167,18 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отмена диалога."""
+    """Команда /cancel: отмена."""
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
 def main() -> None:
-    # Замените на токен вашего бота
-    TOKEN = "YOUR_TOKEN_HERE"
+    # Получаем токен из переменной окружения TELEGRAM_TOKEN
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        logging.error("Переменная окружения TELEGRAM_TOKEN не задана")
+        return
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(token).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -191,7 +192,6 @@ def main() -> None:
     )
 
     app.add_handler(conv_handler)
-
     app.run_polling()
 
 if __name__ == "__main__":
