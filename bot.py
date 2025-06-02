@@ -17,14 +17,16 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Настройки из окружения
+# Получение настроек из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
 PORT = int(os.getenv("PORT", "5000"))
 
 if not TOKEN or not HOSTNAME or not ADMIN_CHAT_ID:
-    logging.error("Отсутствуют обязательные переменные окружения: TELEGRAM_TOKEN, ADMIN_CHAT_ID или RENDER_EXTERNAL_HOSTNAME")
+    logging.error(
+        "Нужно задать переменные окружения: TELEGRAM_TOKEN, ADMIN_CHAT_ID и RENDER_EXTERNAL_HOSTNAME"
+    )
     exit(1)
 
 # Списки регионов, отраслей и специалистов
@@ -65,10 +67,11 @@ SPECIALISTS = [
     },
 ]
 
-# Состояния ConversationHandler
+# Состояния для ConversationHandler
 CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, TYPING_REQUEST = range(4)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Команда /start: предлагаем выбрать регион."""
     keyboard = [
         [InlineKeyboardButton(text=region, callback_data=region)]
         for region in REGIONS
@@ -81,6 +84,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return CHOOSING_REGION
 
 async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора региона."""
     query = update.callback_query
     await query.answer()
     region = query.data
@@ -98,6 +102,7 @@ async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return CHOOSING_INDUSTRY
 
 async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора отрасли."""
     query = update.callback_query
     await query.answer()
     industry = query.data
@@ -127,6 +132,7 @@ async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return CHOOSING_SPECIALIST
 
 async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка выбора специалиста."""
     query = update.callback_query
     await query.answer()
     spec_id = query.data
@@ -144,6 +150,7 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return TYPING_REQUEST
 
 async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Получаем текст заявки и пересылаем админу."""
     text = update.message.text
     user = update.message.from_user
     region = context.user_data.get("region")
@@ -166,6 +173,7 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Команда /cancel: отмена."""
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
@@ -190,7 +198,7 @@ def main() -> None:
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        path=webhook_path,
+        url_path=webhook_path,
         webhook_url=webhook_url
     )
 
