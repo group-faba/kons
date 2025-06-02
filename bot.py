@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -19,19 +20,21 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 if not TOKEN or not ADMIN_CHAT_ID:
-    logging.error("TELEGRAM_TOKEN и/или ADMIN_CHAT_ID не заданы")
+    logging.error("Переменная(ые) TELEGRAM_TOKEN и/или ADMIN_CHAT_ID не заданы")
     exit(1)
 
 ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
-PORT = int(os.getenv("PORT", "5000"))  # Render назначает свой PORT
-# ====================================
+# Render сам передаёт PORT, не нужно указывать вручную
+PORT = int(os.getenv("PORT", "5000"))
+
+# ==================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 
-# Списки регионов/отраслей/специалистов, как раньше
+# Списки регионов/отраслей/специалистов
 REGIONS = ["Москва", "Санкт-Петербург", "Краснодарский край"]
 INDUSTRIES = ["Психология", "Финансы", "Юриспруденция"]
 SPECIALISTS = [
@@ -70,6 +73,7 @@ SPECIALISTS = [
 ]
 
 CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, TYPING_REQUEST = range(4)
+
 
 # ======== ЛОГИКА TELEGRAM-БОТА ========
 
@@ -112,6 +116,7 @@ async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     filtered = [
         s for s in SPECIALISTS if s["region"] == region and s["industry"] == industry
     ]
+
     if not filtered:
         await query.edit_message_text(
             f"По региону «{region}» и отрасли «{industry}» специалисты не найдены."
@@ -174,6 +179,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def run_bot():
+    # Создаём новый asyncio-цикл и устанавливаем его в текущий поток:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -182,12 +191,15 @@ def run_bot():
             CHOOSING_REGION: [CallbackQueryHandler(handle_region)],
             CHOOSING_INDUSTRY: [CallbackQueryHandler(handle_industry)],
             CHOOSING_SPECIALIST: [CallbackQueryHandler(handle_specialist)],
-            TYPING_REQUEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_request)],
+            TYPING_REQUEST: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_request)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv_handler)
 
+    # Запускаем polling внутри этого нового цикла
     app.run_polling()
 
 
@@ -197,15 +209,17 @@ flask_app = Flask("")
 
 @flask_app.route("/")
 def health_check():
+    # Render проверяет корневой путь, чтобы убедиться, что порт открыт
     return "OK", 200
 
 
 def run_flask():
+    # Flask само создаёт свой веб-сервер, слушающий порт
     flask_app.run(host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
-    # запускаем бот в отдельном потоке
+    # Запускаем bot-поток (long polling) в отдельном треде:
     threading.Thread(target=run_bot, daemon=True).start()
-    # а здесь запускаем Flask, он не даст Render считать порт закрытым
+    # А этот поток запускает Flask, чтобы Render увидел открытый порт:
     run_flask()
