@@ -1,7 +1,6 @@
 import os
 import logging
 import threading
-import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -20,12 +19,11 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 if not TOKEN or not ADMIN_CHAT_ID:
-    logging.error("Переменная(ые) TELEGRAM_TOKEN и/или ADMIN_CHAT_ID не заданы")
+    logging.error("Переменные окружения TELEGRAM_TOKEN и/или ADMIN_CHAT_ID не заданы")
     exit(1)
 
 ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
-# Render сам передаёт PORT, не нужно указывать вручную
-PORT = int(os.getenv("PORT", "5000"))
+PORT = int(os.getenv("PORT", "5000"))  # Render сам задаёт PORT
 
 # ==================================
 
@@ -147,8 +145,7 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["specialist"] = spec
     await query.edit_message_text(
         f"Вы выбрали: {spec['name']}\n"
-        f"{spec['description']}\n\n"
-        f"Напишите текст вашей заявки, и я перешлю её."
+        f"{spec['description']}\n\nНапишите текст вашей заявки, и я перешлю её."
     )
     return TYPING_REQUEST
 
@@ -178,11 +175,22 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-def run_bot():
-    # Создаём новый asyncio-цикл и устанавливаем его в текущий поток:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def run_flask():
+    """Запускаем простой Flask-сервер для открытия порта перед Render."""
+    flask_app = Flask(__name__)
 
+    @flask_app.route("/")
+    def health_check():
+        return "OK", 200
+
+    flask_app.run(host="0.0.0.0", port=PORT)
+
+
+def main():
+    # 1. Создаём и запускаем Flask-сервер в отдельном треде
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # 2. Строим Application для Telegram-бота и запускаем polling в главном потоке
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -197,29 +205,12 @@ def run_bot():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
+
     app.add_handler(conv_handler)
 
-    # Запускаем polling внутри этого нового цикла
+    # Запуск polling ПОСЛЕ того, как Flask уже поднялся
     app.run_polling()
 
 
-# ======= НЕБОЛЬШОЙ HTTP-СЕРВЕР ДЛЯ RENDER =======
-
-flask_app = Flask("")
-
-@flask_app.route("/")
-def health_check():
-    # Render проверяет корневой путь, чтобы убедиться, что порт открыт
-    return "OK", 200
-
-
-def run_flask():
-    # Flask само создаёт свой веб-сервер, слушающий порт
-    flask_app.run(host="0.0.0.0", port=PORT)
-
-
 if __name__ == "__main__":
-    # Запускаем bot-поток (long polling) в отдельном треде:
-    threading.Thread(target=run_bot, daemon=True).start()
-    # А этот поток запускает Flask, чтобы Render увидел открытый порт:
-    run_flask()
+    main()
