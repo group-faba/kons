@@ -11,27 +11,32 @@ from telegram.ext import (
     filters,
 )
 
-# Логирование
+# Логирование (можно убрать, если не нужно)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-# Получение настроек из переменных окружения
+# Читаем токен и ADMIN_CHAT_ID из переменных окружения
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
-HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-PORT = int(os.getenv("PORT", "5000"))
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-if not TOKEN or not HOSTNAME or not ADMIN_CHAT_ID:
-    logging.error(
-        "Нужно задать переменные окружения: TELEGRAM_TOKEN, ADMIN_CHAT_ID и RENDER_EXTERNAL_HOSTNAME"
-    )
+if not TOKEN:
+    logging.error("Переменная окружения TELEGRAM_TOKEN не задана")
     exit(1)
 
-# Списки регионов, отраслей и специалистов
+if not ADMIN_CHAT_ID:
+    logging.error("Переменная окружения ADMIN_CHAT_ID не задана")
+    exit(1)
+
+# Приведём ADMIN_CHAT_ID к целому числу
+ADMIN_CHAT_ID = int(ADMIN_CHAT_ID)
+
+# Списки регионов и отраслей
 REGIONS = ["Москва", "Санкт-Петербург", "Краснодарский край"]
 INDUSTRIES = ["Психология", "Финансы", "Юриспруденция"]
+
+# Список специалистов с параметрами
 SPECIALISTS = [
     {
         "id": "spec1",
@@ -70,6 +75,7 @@ SPECIALISTS = [
 # Состояния для ConversationHandler
 CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, TYPING_REQUEST = range(4)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Команда /start: предлагаем выбрать регион."""
     keyboard = [
@@ -82,6 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         reply_markup=reply_markup
     )
     return CHOOSING_REGION
+
 
 async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора региона."""
@@ -100,6 +107,7 @@ async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         reply_markup=reply_markup
     )
     return CHOOSING_INDUSTRY
+
 
 async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора отрасли."""
@@ -131,6 +139,7 @@ async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     return CHOOSING_SPECIALIST
 
+
 async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка выбора специалиста."""
     query = update.callback_query
@@ -148,6 +157,7 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"Напишите текст вашей заявки, и я перешлю её."
     )
     return TYPING_REQUEST
+
 
 async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получаем текст заявки и пересылаем админу."""
@@ -172,12 +182,15 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Ваша заявка отправлена. Спасибо.")
     return ConversationHandler.END
 
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Команда /cancel: отмена."""
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
+
 def main() -> None:
+    # Строим приложение бота
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -186,21 +199,18 @@ def main() -> None:
             CHOOSING_REGION: [CallbackQueryHandler(handle_region)],
             CHOOSING_INDUSTRY: [CallbackQueryHandler(handle_industry)],
             CHOOSING_SPECIALIST: [CallbackQueryHandler(handle_specialist)],
-            TYPING_REQUEST: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_request)],
+            TYPING_REQUEST: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_request)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     app.add_handler(conv_handler)
 
-    webhook_path = f"/{TOKEN}"
-    webhook_url = f"https://{HOSTNAME}{webhook_path}"
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=webhook_path,
-        webhook_url=webhook_url
-    )
+    # Запускаем long polling
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
