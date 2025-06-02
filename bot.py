@@ -11,20 +11,25 @@ from telegram.ext import (
     filters,
 )
 
-# Логирование (по желанию)
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 
-# Чат ID администратора (куда будут уходить заявки)
-ADMIN_CHAT_ID = 123456789  # замените на свой ID или перенесите в ENV
+# Настройки из окружения
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
+HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+PORT = int(os.getenv("PORT", "5000"))
 
-# Списки регионов и отраслей
+if not TOKEN or not HOSTNAME or not ADMIN_CHAT_ID:
+    logging.error("Отсутствуют обязательные переменные окружения: TELEGRAM_TOKEN, ADMIN_CHAT_ID или RENDER_EXTERNAL_HOSTNAME")
+    exit(1)
+
+# Списки регионов, отраслей и специалистов
 REGIONS = ["Москва", "Санкт-Петербург", "Краснодарский край"]
 INDUSTRIES = ["Психология", "Финансы", "Юриспруденция"]
-
-# Список специалистов с их параметрами
 SPECIALISTS = [
     {
         "id": "spec1",
@@ -58,14 +63,12 @@ SPECIALISTS = [
         "region": "Краснодарский край",
         "industry": "Финансы"
     },
-    # Добавьте своих специалистов при необходимости
 ]
 
 # Состояния ConversationHandler
 CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, TYPING_REQUEST = range(4)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Команда /start: показываем список регионов."""
     keyboard = [
         [InlineKeyboardButton(text=region, callback_data=region)]
         for region in REGIONS
@@ -78,7 +81,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return CHOOSING_REGION
 
 async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Пользователь выбрал регион."""
     query = update.callback_query
     await query.answer()
     region = query.data
@@ -96,7 +98,6 @@ async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return CHOOSING_INDUSTRY
 
 async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Пользователь выбрал отрасль."""
     query = update.callback_query
     await query.answer()
     industry = query.data
@@ -126,7 +127,6 @@ async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return CHOOSING_SPECIALIST
 
 async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Пользователь выбрал специалиста."""
     query = update.callback_query
     await query.answer()
     spec_id = query.data
@@ -144,7 +144,6 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return TYPING_REQUEST
 
 async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получаем текст заявки и пересылаем админу."""
     text = update.message.text
     user = update.message.from_user
     region = context.user_data.get("region")
@@ -167,18 +166,11 @@ async def handle_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Команда /cancel: отмена."""
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
 def main() -> None:
-    # Получаем токен из переменной окружения TELEGRAM_TOKEN
-    token = os.getenv("TELEGRAM_TOKEN")
-    if not token:
-        logging.error("Переменная окружения TELEGRAM_TOKEN не задана")
-        return
-
-    app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -192,7 +184,15 @@ def main() -> None:
     )
 
     app.add_handler(conv_handler)
-    app.run_polling()
+
+    webhook_path = f"/{TOKEN}"
+    webhook_url = f"https://{HOSTNAME}{webhook_path}"
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        path=webhook_path,
+        webhook_url=webhook_url
+    )
 
 if __name__ == "__main__":
     main()
