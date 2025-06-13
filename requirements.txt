@@ -1,2 +1,5 @@
 python-telegram-bot==20.3
+telegram-bot-calendar==1.2.6
+google-api-python-client==2.82.0
+oauth2client==4.1.3
 Flask==2.3.2
