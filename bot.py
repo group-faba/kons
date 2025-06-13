@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import threading
 import sqlite3
@@ -14,17 +15,23 @@ from telegram.ext import (
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from datetime import date, datetime, timedelta
 
-# ========== CONFIGURATION ==========
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '0'))
-CLIENT_SECRETS_FILE = os.getenv('CLIENT_SECRETS_FILE', 'client_secrets.json')
-REDIRECT_URI = os.getenv('REDIRECT_URI')  # e.g. https://your-service.onrender.com/oauth2callback
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
-DB_PATH = os.getenv('DB_PATH', 'bot.db')
+# ========== ЗАГРУЗКА СЕКРЕТОВ GOOGLE OAUTH ==========
+creds_json = os.getenv('GOOGLE_CREDS_JSON')
+if creds_json:
+    with open('client_secrets.json', 'w') as f:
+        f.write(creds_json)
 
-# Validate
+# ========== КОНФИГУРАЦИЯ ==========
+TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
+ADMIN_CHAT_ID     = int(os.getenv('ADMIN_CHAT_ID', '0'))
+CLIENT_SECRETS    = os.getenv('CLIENT_SECRETS_FILE', 'client_secrets.json')
+REDIRECT_URI      = os.getenv('REDIRECT_URI')  # https://your-service.onrender.com/oauth2callback
+SCOPES            = ['https://www.googleapis.com/auth/calendar.readonly']
+DB_PATH           = os.getenv('DB_PATH', 'bot.db')
+PORT              = int(os.getenv('PORT', '8080'))
+
 if not TELEGRAM_TOKEN or not ADMIN_CHAT_ID or not REDIRECT_URI:
-    logging.error('Set TELEGRAM_TOKEN, ADMIN_CHAT_ID and REDIRECT_URI in env')
+    logging.error('Не заданы TELEGRAM_TOKEN, ADMIN_CHAT_ID или REDIRECT_URI')
     exit(1)
 
 logging.basicConfig(
@@ -32,7 +39,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ========== DATABASE ==========
+# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -50,15 +57,14 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== FLASK SERVER FOR OAUTH ==========
+# ========== FLASK-СЕРВЕР ДЛЯ OAUTH ==========
 app = Flask(__name__)
 
 @app.route('/authorize')
 def authorize():
-    # state carries telegram user_id
     user_id = request.args.get('state')
     flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
+        CLIENT_SECRETS,
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
@@ -73,7 +79,7 @@ def authorize():
 def oauth2callback():
     state = request.args.get('state')  # telegram user_id
     flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
+        CLIENT_SECRETS,
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
@@ -92,15 +98,15 @@ def oauth2callback():
     ))
     conn.commit()
     conn.close()
-    return 'Календарь успешно привязан. Возвращайтесь в бота.'
+    return 'Календарь успешно привязан. Можете вернуться к боту.'
 
-# ========== GOOGLE CALENDAR UTILITIES ==========
+# ========== GOOGLE CALENDAR HELPERS ==========
 def get_credentials(user_id: str) -> Credentials | None:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        'SELECT token,refresh_token,token_uri,client_id,client_secret,scopes FROM tokens WHERE user_id=?',
-        (str(user_id),)
+        'SELECT token,refresh_token,token_uri,client_id,client_secret,scopes '
+        'FROM tokens WHERE user_id=?', (str(user_id),)
     )
     row = cur.fetchone()
     conn.close()
@@ -122,12 +128,12 @@ def generate_free_slots(user_id: int, date_selected: date) -> list[str]:
         return []
     service = build('calendar', 'v3', credentials=creds)
     start = datetime.combine(date_selected, datetime.min.time()).isoformat() + 'Z'
-    end = (datetime.combine(date_selected, datetime.min.time()) + timedelta(days=1)).isoformat() + 'Z'
-    body = { 'timeMin': start, 'timeMax': end, 'items': [{'id': 'primary'}] }
+    end   = (datetime.combine(date_selected, datetime.min.time()) + timedelta(days=1)).isoformat() + 'Z'
+    body = {'timeMin': start, 'timeMax': end, 'items': [{'id': 'primary'}]}
     resp = service.freebusy().query(body=body).execute()
     busy = resp['calendars']['primary']['busy']
     slots = []
-    for hour in range(9, 18):  # 09:00–17:00
+    for hour in range(9, 18):  # слоты 09:00–17:00
         slot = datetime.combine(date_selected, datetime.min.time()) + timedelta(hours=hour)
         if any(
             datetime.fromisoformat(b['start'].rstrip('Z')) <= slot < datetime.fromisoformat(b['end'].rstrip('Z'))
@@ -137,71 +143,55 @@ def generate_free_slots(user_id: int, date_selected: date) -> list[str]:
         slots.append(f"{hour:02d}:00")
     return slots
 
-# ========== TELEGRAM BOT LOGIC ==========
+# ========== BOT LOGIC ==========
 # Conversation states
-(
-    CHOOSING_REGION,
-    CHOOSING_INDUSTRY,
-    CHOOSING_SPECIALIST,
-    CHOOSING_DATE,
-    CHOOSING_TIME
-) = range(5)
+CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, CHOOSING_DATE, CHOOSING_TIME = range(5)
 
 REGIONS = ['Москва', 'Санкт-Петербург', 'Краснодарский край']
 INDUSTRIES = ['Психология', 'Финансы', 'Юриспруденция']
 SPECIALISTS = [
     {'id':'spec1','name':'Анна Иванова','region':'Москва','industry':'Психология'},
     {'id':'spec2','name':'Игорь Петров','region':'Москва','industry':'Финансы'},
-    {'id':'spec3','name':'Мария Сидорова','region':'Санкт-Петербург','industry':'Юриспруденция'}
+    {'id':'spec3','name':'Мария Сидорова','region':'Санкт-Петербург','industry':'Юриспруденция'},
 ]
 
-async def link_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def link_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     link = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={user_id}"
     await update.message.reply_text(
-        f"Перейдите по ссылке и дайте доступ к календарю:\n{link}"
+        f"Привяжи календарь, перейдя по ссылке:\n{link}"
     )
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "Для начала привяжите календарь: /link_calendar"
-    )
-    return ConversationHandler.END
 
 async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # Проверим, привязал ли календарь
     if not get_credentials(update.effective_user.id):
-        await update.message.reply_text("Сначала привяжите календарь командой /link_calendar")
+        await update.message.reply_text("Сначала привяжи календарь командой /link_calendar")
         return ConversationHandler.END
     keyboard = [[InlineKeyboardButton(r, callback_data=r)] for r in REGIONS]
-    await update.message.reply_text(
-        "Выберите регион:", reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Выбери регион:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSING_REGION
 
 async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    data = update.callback_query.data
+    region = update.callback_query.data
     await update.callback_query.answer()
-    context.user_data['region'] = data
+    context.user_data['region'] = region
     keyboard = [[InlineKeyboardButton(i, callback_data=i)] for i in INDUSTRIES]
     await update.callback_query.edit_message_text(
-        f"Регион: {data}\nТеперь выберите отрасль:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        f"Регион: {region}\nВыбери отрасль:", reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CHOOSING_INDUSTRY
 
 async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    data = update.callback_query.data
+    industry = update.callback_query.data
     await update.callback_query.answer()
-    context.user_data['industry'] = data
+    context.user_data['industry'] = industry
     region = context.user_data['region']
-    filtered = [s for s in SPECIALISTS if s['region']==region and s['industry']==data]
+    filtered = [s for s in SPECIALISTS if s['region']==region and s['industry']==industry]
     if not filtered:
         await update.callback_query.edit_message_text("Консультанты не найдены.")
         return ConversationHandler.END
     keyboard = [[InlineKeyboardButton(s['name'], callback_data=s['id'])] for s in filtered]
     await update.callback_query.edit_message_text(
-        f"Регион: {region}\nОтрасль: {data}\nВыберите специалиста:",
+        f"Регион: {region}\nОтрасль: {industry}\nВыбери специалиста:", 
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CHOOSING_SPECIALIST
@@ -212,23 +202,22 @@ async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     spec = next(s for s in SPECIALISTS if s['id']==spec_id)
     context.user_data['specialist'] = spec
     calendar, step = DetailedTelegramCalendar(min_date=date.today(), locale='ru').build()
-    await update.callback_query.edit_message_text('Выберите дату:', reply_markup=calendar)
+    await update.callback_query.edit_message_text("Выбери дату:", reply_markup=calendar)
     return CHOOSING_DATE
 
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     result, key, step = DetailedTelegramCalendar(locale='ru').process(update.callback_query.data)
     if not result and key:
-        await update.callback_query.edit_message_text(f'Выберите {LSTEP[step]}', reply_markup=key)
+        await update.callback_query.edit_message_text(f"Выбери {LSTEP[step]}", reply_markup=key)
         return CHOOSING_DATE
-    if result:
-        context.user_data['date'] = result
-        slots = generate_free_slots(update.effective_user.id, result)
-        if not slots:
-            await update.callback_query.edit_message_text('Свободных слотов нет.')
-            return ConversationHandler.END
-        keyboard = [[InlineKeyboardButton(t, callback_data=t)] for t in slots]
-        await update.callback_query.edit_message_text('Выберите время:', reply_markup=InlineKeyboardMarkup(keyboard))
-        return CHOOSING_TIME
+    context.user_data['date'] = result
+    slots = generate_free_slots(update.effective_user.id, result)
+    if not slots:
+        await update.callback_query.edit_message_text("Свободных слотов нет.")
+        return ConversationHandler.END
+    keyboard = [[InlineKeyboardButton(t, callback_data=t)] for t in slots]
+    await update.callback_query.edit_message_text("Выбери время:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSING_TIME
 
 async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     time_sel = update.callback_query.data
@@ -237,38 +226,36 @@ async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     spec = context.user_data['specialist']
     date_sel = context.user_data['date'].strftime('%d.%m.%Y')
     await update.callback_query.edit_message_text(
-        f'Ваша запись: {spec["name"]}, {date_sel} в {time_sel} подтверждена.'
+        f"Запись подтверждена:\n{spec['name']}, {date_sel} в {time_sel}"
     )
     await context.bot.send_message(
         chat_id=ADMIN_CHAT_ID,
-        text=(f'Новая запись от {user.full_name} (id={user.id}): '
-              f'{spec["name"]}, {date_sel} в {time_sel}')
+        text=(f"Новая запись от {user.full_name} (id={user.id}): "
+              f"{spec['name']}, {date_sel} в {time_sel}")
     )
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text('Отменено.')
+    await update.message.reply_text("Отменено.")
     return ConversationHandler.END
 
-# ========== RUN ==========
+# ========== ЗАПУСК ==========
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', '8080')))
+    app.run(host='0.0.0.0', port=PORT)
 
 def main():
     init_db()
-    # flax server in background
     threading.Thread(target=run_flask, daemon=True).start()
-    # telegram bot
     bot = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     bot.add_handler(CommandHandler('link_calendar', link_calendar))
     conv = ConversationHandler(
         entry_points=[CommandHandler('start', start_booking)],
         states={
-            CHOOSING_REGION: [CallbackQueryHandler(handle_region)],
-            CHOOSING_INDUSTRY: [CallbackQueryHandler(handle_industry)],
+            CHOOSING_REGION:     [CallbackQueryHandler(handle_region)],
+            CHOOSING_INDUSTRY:   [CallbackQueryHandler(handle_industry)],
             CHOOSING_SPECIALIST: [CallbackQueryHandler(handle_specialist)],
-            CHOOSING_DATE: [CallbackQueryHandler(handle_date)],
-            CHOOSING_TIME: [CallbackQueryHandler(handle_time)],
+            CHOOSING_DATE:       [CallbackQueryHandler(handle_date)],
+            CHOOSING_TIME:       [CallbackQueryHandler(handle_time)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
