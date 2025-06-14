@@ -15,17 +15,17 @@ from telegram.ext import (
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from datetime import date, datetime, timedelta
 
-# ========== ЗАГРУЗКА СЕКРЕТОВ GOOGLE OAUTH ==========
+# ==================== ЗАГРУЗКА GOOGLE CLIENT SECRETS ====================
 creds_json = os.getenv('GOOGLE_CREDS_JSON')
 if creds_json:
     with open('client_secrets.json', 'w') as f:
         f.write(creds_json)
 
-# ========== КОНФИГУРАЦИЯ ==========
+# ======================= НАСТРОЙКИ =======================
 TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
 ADMIN_CHAT_ID     = int(os.getenv('ADMIN_CHAT_ID', '0'))
 CLIENT_SECRETS    = os.getenv('CLIENT_SECRETS_FILE', 'client_secrets.json')
-REDIRECT_URI      = os.getenv('REDIRECT_URI')  # https://your-service.onrender.com/oauth2callback
+REDIRECT_URI      = os.getenv('REDIRECT_URI')  # https://<your>.onrender.com/oauth2callback
 SCOPES            = ['https://www.googleapis.com/auth/calendar.readonly']
 DB_PATH           = os.getenv('DB_PATH', 'bot.db')
 PORT              = int(os.getenv('PORT', '8080'))
@@ -34,12 +34,9 @@ if not TELEGRAM_TOKEN or not ADMIN_CHAT_ID or not REDIRECT_URI:
     logging.error('Не заданы TELEGRAM_TOKEN, ADMIN_CHAT_ID или REDIRECT_URI')
     exit(1)
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 
-# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
+# ======================= БАЗА ДАННЫХ =======================
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -57,16 +54,14 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ========== FLASK-СЕРВЕР ДЛЯ OAUTH ==========
+# ======================= FLASK: OAuth endpoints =======================
 app = Flask(__name__)
 
 @app.route('/authorize')
 def authorize():
     user_id = request.args.get('state')
     flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS,
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
+        CLIENT_SECRETS, scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
     auth_url, state = flow.authorization_url(
         access_type='offline',
@@ -77,11 +72,9 @@ def authorize():
 
 @app.route('/oauth2callback')
 def oauth2callback():
-    state = request.args.get('state')  # telegram user_id
+    state = request.args.get('state')
     flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS,
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
+        CLIENT_SECRETS, scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
@@ -98,9 +91,9 @@ def oauth2callback():
     ))
     conn.commit()
     conn.close()
-    return 'Календарь успешно привязан. Можете вернуться к боту.'
+    return 'Календарь привязан. Вернитесь в бот и введите /start.'
 
-# ========== GOOGLE CALENDAR HELPERS ==========
+# ======================= GOOGLE CALENDAR HELPERS =======================
 def get_credentials(user_id: str) -> Credentials | None:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -133,7 +126,7 @@ def generate_free_slots(user_id: int, date_selected: date) -> list[str]:
     resp = service.freebusy().query(body=body).execute()
     busy = resp['calendars']['primary']['busy']
     slots = []
-    for hour in range(9, 18):  # слоты 09:00–17:00
+    for hour in range(9, 18):
         slot = datetime.combine(date_selected, datetime.min.time()) + timedelta(hours=hour)
         if any(
             datetime.fromisoformat(b['start'].rstrip('Z')) <= slot < datetime.fromisoformat(b['end'].rstrip('Z'))
@@ -143,8 +136,7 @@ def generate_free_slots(user_id: int, date_selected: date) -> list[str]:
         slots.append(f"{hour:02d}:00")
     return slots
 
-# ========== BOT LOGIC ==========
-# Conversation states
+# ======================= BOT LOGIC =======================
 CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, CHOOSING_DATE, CHOOSING_TIME = range(5)
 
 REGIONS = ['Москва', 'Санкт-Петербург', 'Краснодарский край']
@@ -159,12 +151,16 @@ async def link_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     link = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={user_id}"
     await update.message.reply_text(
-        f"Привяжи календарь, перейдя по ссылке:\n{link}"
+        f"Сначала привяжи календарь:\n{link}"
     )
 
-async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not get_credentials(update.effective_user.id):
-        await update.message.reply_text("Сначала привяжи календарь командой /link_calendar")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    if not get_credentials(user_id):
+        link = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={user_id}"
+        await update.message.reply_text(
+            f"Привяжи календарь командой /link_calendar:\n{link}"
+        )
         return ConversationHandler.END
     keyboard = [[InlineKeyboardButton(r, callback_data=r)] for r in REGIONS]
     await update.message.reply_text("Выбери регион:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -239,7 +235,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Отменено.")
     return ConversationHandler.END
 
-# ========== ЗАПУСК ==========
+# ==================== ЗАПУСК ====================
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
@@ -249,7 +245,7 @@ def main():
     bot = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     bot.add_handler(CommandHandler('link_calendar', link_calendar))
     conv = ConversationHandler(
-        entry_points=[CommandHandler('start', start_booking)],
+        entry_points=[CommandHandler('start', start)],
         states={
             CHOOSING_REGION:     [CallbackQueryHandler(handle_region)],
             CHOOSING_INDUSTRY:   [CallbackQueryHandler(handle_industry)],
