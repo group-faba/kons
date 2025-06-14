@@ -54,8 +54,12 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ======================= FLASK: OAuth endpoints =======================
+# ======================= FLASK: OAuth + Health =======================
 app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return 'OK', 200
 
 @app.route('/authorize')
 def authorize():
@@ -91,7 +95,7 @@ def oauth2callback():
     ))
     conn.commit()
     conn.close()
-    return 'Календарь привязан. Вернитесь в бот и введите /start.'
+    return 'Календарь привязан. Вернитесь в бота и введите /start.'
 
 # ======================= GOOGLE CALENDAR HELPERS =======================
 def get_credentials(user_id: str) -> Credentials | None:
@@ -150,17 +154,13 @@ SPECIALISTS = [
 async def link_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     link = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={user_id}"
-    await update.message.reply_text(
-        f"Сначала привяжи календарь:\n{link}"
-    )
+    await update.message.reply_text(f"Привяжи календарь:\n{link}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     if not get_credentials(user_id):
         link = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={user_id}"
-        await update.message.reply_text(
-            f"Привяжи календарь командой /link_calendar:\n{link}"
-        )
+        await update.message.reply_text(f"Сначала привяжи календарь:\n{link}")
         return ConversationHandler.END
     keyboard = [[InlineKeyboardButton(r, callback_data=r)] for r in REGIONS]
     await update.message.reply_text("Выбери регион:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -187,7 +187,7 @@ async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     keyboard = [[InlineKeyboardButton(s['name'], callback_data=s['id'])] for s in filtered]
     await update.callback_query.edit_message_text(
-        f"Регион: {region}\nОтрасль: {industry}\nВыбери специалиста:", 
+        f"Регион: {region}\nОтрасль: {industry}\nВыбери специалиста:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CHOOSING_SPECIALIST
