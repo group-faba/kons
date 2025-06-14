@@ -1,6 +1,7 @@
+Flask==2.3.2
+gunicorn==23.0.0
 python-telegram-bot==20.3
 python-telegram-bot-calendar==1.0.5
 google-auth-oauthlib==1.0.0
 google-api-python-client==2.82.0
-Flask==2.3.2
-gunicorn==23.0.0
+oauth2client==4.1.3
