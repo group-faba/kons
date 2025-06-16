@@ -216,8 +216,5 @@ def webhook():
     application.dispatcher.process_update(update)
     return 'OK', 200
 
-if __name__ == '__main__':
-    init_db()
-    # Устанавливаем webhook
-    bot.set_webhook(f"{APP_URL}/webhook")
-    app.run(host='0.0.0.0', port=PORT)
+ init_db()
+bot.set_webhook(f"{APP_URL}/webhook")
