@@ -216,5 +216,5 @@ def webhook():
     application.dispatcher.process_update(update)
     return 'OK', 200
 
- init_db()
+init_db()
 bot.set_webhook(f"{APP_URL}/webhook")
