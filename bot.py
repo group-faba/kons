@@ -1,4 +1,3 @@
-# bot.py
 import os
 import logging
 import threading
@@ -12,34 +11,44 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, ConversationHandler,
     CallbackQueryHandler, ContextTypes
 )
+from telegram.error import TimedOut
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from datetime import date, datetime, timedelta
+import time
 
-# ========== Настройки ==========
-TELEGRAM_TOKEN    = os.getenv('TELEGRAM_TOKEN')
-ADMIN_CHAT_ID     = int(os.getenv('ADMIN_CHAT_ID', '0'))
-CLIENT_FILE       = 'client_secrets.json'
-REDIRECT_URI      = os.getenv('REDIRECT_URI')
-DB_PATH           = os.getenv('DB_PATH', 'bot.db')
+# ========== ЗАГРУЗКА СЕКРЕТОВ ==========
 GOOGLE_CREDS_JSON = os.getenv('GOOGLE_CREDS_JSON')
-PORT              = int(os.getenv('PORT', '8080'))
-SCOPES            = ['https://www.googleapis.com/auth/calendar.readonly']
-
+CLIENT_FILE       = 'client_secrets.json'
 if GOOGLE_CREDS_JSON:
     with open(CLIENT_FILE, 'w') as f:
         f.write(GOOGLE_CREDS_JSON)
 
+# ========== КОНФИГУРАЦИЯ ==========
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+ADMIN_CHAT_ID  = int(os.getenv('ADMIN_CHAT_ID', '0'))
+REDIRECT_URI   = os.getenv('REDIRECT_URI')     # https://<your>/oauth2callback
+PORT           = int(os.getenv('PORT', '8080'))
+DB_PATH        = os.getenv('DB_PATH', 'bot.db')
+SCOPES         = ['https://www.googleapis.com/auth/calendar.readonly']
+
+if not TELEGRAM_TOKEN or not ADMIN_CHAT_ID or not REDIRECT_URI:
+    logging.error("Не заданы TELEGRAM_TOKEN, ADMIN_CHAT_ID или REDIRECT_URI")
+    exit(1)
+
 logging.basicConfig(level=logging.INFO)
 
-# ========== БД для токенов ==========
+# ========== БД ==========
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute('''
       CREATE TABLE IF NOT EXISTS tokens (
         user_id TEXT PRIMARY KEY,
-        token TEXT, refresh_token TEXT,
-        token_uri TEXT, client_id TEXT,
-        client_secret TEXT, scopes TEXT
+        token TEXT,
+        refresh_token TEXT,
+        token_uri TEXT,
+        client_id TEXT,
+        client_secret TEXT,
+        scopes TEXT
       )
     ''')
     conn.commit()
@@ -62,21 +71,22 @@ def save_creds(user_id, creds: Credentials):
 def get_creds(user_id) -> Credentials | None:
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
-      'SELECT token,refresh_token,token_uri,client_id,client_secret,scopes FROM tokens WHERE user_id=?',
-      (str(user_id),)
+        'SELECT token,refresh_token,token_uri,client_id,client_secret,scopes '
+        'FROM tokens WHERE user_id=?', (str(user_id),)
     ).fetchone()
     conn.close()
-    if not row: return None
+    if not row:
+        return None
     return Credentials(
-      token=row[0],
-      refresh_token=row[1],
-      token_uri=row[2],
-      client_id=row[3],
-      client_secret=row[4],
-      scopes=row[5].split(',')
+        token=row[0],
+        refresh_token=row[1],
+        token_uri=row[2],
+        client_id=row[3],
+        client_secret=row[4],
+        scopes=row[5].split(',')
     )
 
-# ========== Flask для OAuth & health-check ==========
+# ========== Flask для OAuth & health ==========
 app = Flask(__name__)
 
 @app.route('/')
@@ -86,101 +96,104 @@ def health():
 @app.route('/authorize')
 def authorize():
     user = request.args.get('state')
-    flow = Flow.from_client_secrets_file(
-        CLIENT_FILE, scopes=SCOPES, redirect_uri=REDIRECT_URI
-    )
-    auth_url, _ = flow.authorization_url(
-        access_type='offline', include_granted_scopes='true', state=user
-    )
+    flow = Flow.from_client_secrets_file(CLIENT_FILE, scopes=SCOPES, redirect_uri=REDIRECT_URI)
+    auth_url, _ = flow.authorization_url(access_type='offline', include_granted_scopes='true', state=user)
     return redirect(auth_url)
 
 @app.route('/oauth2callback')
 def oauth2callback():
     state = request.args.get('state')
-    flow = Flow.from_client_secrets_file(
-        CLIENT_FILE, scopes=SCOPES, redirect_uri=REDIRECT_URI
-    )
+    flow = Flow.from_client_secrets_file(CLIENT_FILE, scopes=SCOPES, redirect_uri=REDIRECT_URI)
     flow.fetch_token(authorization_response=request.url)
     save_creds(state, flow.credentials)
-    return 'Календарь привязан! Вернитесь в бота и введите /start.'
-
-# ========== Telegram-бот через polling ==========
-CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, CHOOSING_DATE, CHOOSING_TIME = range(5)
-REGIONS = ['Москва','Санкт-Петербург','Краснодарский край']
-INDUSTRIES = ['Психология','Финансы','Юриспруденция']
-SPECIALISTS = [
-  {'id':'spec1','name':'Анна Иванова','region':'Москва','industry':'Психология'},
-  {'id':'spec2','name':'Игорь Петров','region':'Москва','industry':'Финансы'},
-  {'id':'spec3','name':'Мария Сидорова','region':'Санкт-Петербург','industry':'Юриспруденция'}
-]
+    return 'Календарь привязан! Вернитесь в бот и введите /start.'
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
+# ========== Telegram-polling ==========
+CHOOSING_REGION, CHOOSING_INDUSTRY, CHOOSING_SPECIALIST, CHOOSING_DATE, CHOOSING_TIME = range(5)
+
+REGIONS    = ['Москва', 'Санкт-Петербург', 'Краснодарский край']
+INDUSTRIES = ['Психология', 'Финансы', 'Юриспруденция']
+SPECIALISTS = [
+    {'id':'spec1','name':'Анна Иванова','region':'Москва','industry':'Психология'},
+    {'id':'spec2','name':'Игорь Петров','region':'Москва','industry':'Финансы'},
+    {'id':'spec3','name':'Мария Сидорова','region':'Санкт-Петербург','industry':'Юриспруденция'}
+]
+
 async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    uid  = update.effective_user.id
     link = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={uid}"
-    await update.message.reply_text(f"Привяжи календарь:\n{link}")
+    await update.message.reply_text(f"Привяжи календарь по ссылке:\n{link}")
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not get_creds(update.effective_user.id):
         await cmd_link(update, context)
         return ConversationHandler.END
-    kb = [[InlineKeyboardButton(r,callback_data=r)] for r in REGIONS]
-    await update.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
+    keyboard = [[InlineKeyboardButton(r, callback_data=r)] for r in REGIONS]
+    await update.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CHOOSING_REGION
 
 async def handle_region(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    r = update.callback_query.data
-    context.user_data['region'] = r
-    kb = [[InlineKeyboardButton(i,callback_data=i)] for i in INDUSTRIES]
-    await update.callback_query.edit_message_text(f"Регион: {r}\nВыберите отрасль:", reply_markup=InlineKeyboardMarkup(kb))
+    region = update.callback_query.data
+    await update.callback_query.answer()
+    context.user_data['region'] = region
+    kb = [[InlineKeyboardButton(i, callback_data=i)] for i in INDUSTRIES]
+    await update.callback_query.edit_message_text(f"Регион: {region}\nВыберите отрасль:", reply_markup=InlineKeyboardMarkup(kb))
     return CHOOSING_INDUSTRY
 
 async def handle_industry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    i = update.callback_query.data
-    context.user_data['industry'] = i
-    filtered = [s for s in SPECIALISTS if s['region']==context.user_data['region'] and s['industry']==i]
-    kb = [[InlineKeyboardButton(s['name'],callback_data=s['id'])] for s in filtered]
-    await update.callback_query.edit_message_text(f"Отрасль: {i}\nВыберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
+    industry = update.callback_query.data
+    await update.callback_query.answer()
+    context.user_data['industry'] = industry
+    region = context.user_data['region']
+    filtered = [s for s in SPECIALISTS if s['region']==region and s['industry']==industry]
+    if not filtered:
+        await update.callback_query.edit_message_text("Консультанты не найдены.")
+        return ConversationHandler.END
+    kb = [[InlineKeyboardButton(s['name'], callback_data=s['id'])] for s in filtered]
+    await update.callback_query.edit_message_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
     return CHOOSING_SPECIALIST
 
 async def handle_specialist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     sid = update.callback_query.data
+    await update.callback_query.answer()
     spec = next(s for s in SPECIALISTS if s['id']==sid)
     context.user_data['spec'] = spec
-    cal,step = DetailedTelegramCalendar(min_date=date.today(),locale='ru').build()
+    cal, step = DetailedTelegramCalendar(min_date=date.today(), locale='ru').build()
     await update.callback_query.edit_message_text("Выберите дату:", reply_markup=cal)
     return CHOOSING_DATE
 
 async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    res,key,step = DetailedTelegramCalendar(locale='ru').process(update.callback_query.data)
-    if not res and key:
+    result, key, step = DetailedTelegramCalendar(locale='ru').process(update.callback_query.data)
+    if not result and key:
         await update.callback_query.edit_message_text(f"Выберите {LSTEP[step]}", reply_markup=key)
         return CHOOSING_DATE
-    context.user_data['date'] = res
-    # получим слоты
+    context.user_data['date'] = result
     creds = get_creds(update.effective_user.id)
     service = build('calendar','v3',credentials=creds)
-    start = datetime.combine(res,datetime.min.time()).isoformat()+'Z'
-    end   = (datetime.combine(res,datetime.min.time())+timedelta(days=1)).isoformat()+'Z'
+    start = datetime.combine(result, datetime.min.time()).isoformat()+'Z'
+    end   = (datetime.combine(result, datetime.min.time())+timedelta(days=1)).isoformat()+'Z'
     busy = service.freebusy().query({'timeMin':start,'timeMax':end,'items':[{'id':'primary'}]}).execute()['calendars']['primary']['busy']
     slots=[]
     for h in range(9,18):
-        t = datetime.combine(res,datetime.min.time())+timedelta(hours=h)
-        if any(datetime.fromisoformat(b['start'].rstrip('Z'))<=t<datetime.fromisoformat(b['end'].rstrip('Z')) for b in busy): continue
+        slot = datetime.combine(result, datetime.min.time())+timedelta(hours=h)
+        if any(datetime.fromisoformat(b['start'].rstrip('Z'))<=slot<datetime.fromisoformat(b['end'].rstrip('Z')) for b in busy):
+            continue
         slots.append(f"{h:02d}:00")
-    kb=[[InlineKeyboardButton(s,callback_data=s)] for s in slots]
+    kb = [[InlineKeyboardButton(t,callback_data=t)] for t in slots]
     await update.callback_query.edit_message_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
     return CHOOSING_TIME
 
 async def handle_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    t = update.callback_query.data
-    u = update.callback_query.from_user
+    time_sel = update.callback_query.data
+    await update.callback_query.answer()
+    user = update.callback_query.from_user
     spec = context.user_data['spec']
-    d = context.user_data['date'].strftime('%d.%m.%Y')
-    await update.callback_query.edit_message_text(f"Запись: {spec['name']}, {d} в {t} — подтверждена.")
-    await context.bot.send_message(ADMIN_CHAT_ID, f"Новая запись от {u.full_name} (id={u.id}): {spec['name']}, {d} в {t}")
+    date_sel = context.user_data['date'].strftime('%d.%m.%Y')
+    await update.callback_query.edit_message_text(f"Запись подтверждена: {spec['name']}, {date_sel} в {time_sel}")
+    await context.bot.send_message(ADMIN_CHAT_ID, f"Новая запись от {user.full_name} (id={user.id}): {spec['name']}, {date_sel} в {time_sel}")
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -189,11 +202,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def main():
     init_db()
-    # запуск Flask в отдельном потоке
-    threading.Thread(target=run_flask,daemon=True).start()
+    # Flask в фоне
+    threading.Thread(target=run_flask, daemon=True).start()
 
-    app_bot = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app_bot.add_handler(CommandHandler('link_calendar', cmd_link))
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    # сброс webhook, если был
+    app.bot.delete_webhook(drop_pending_updates=True)
+
+    app.add_handler(CommandHandler('link_calendar', cmd_link))
     conv = ConversationHandler(
         entry_points=[CommandHandler('start', cmd_start)],
         states={
@@ -205,8 +221,18 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
-    app_bot.add_handler(conv)
-    app_bot.run_polling()
+    app.add_handler(conv)
+
+    # авто-перезапуск при таймаутах
+    while True:
+        try:
+            app.run_polling()
+        except TimedOut:
+            logging.warning("Timeout polling — перезапускаем через 1 сек.")
+            time.sleep(1)
+        except Exception as e:
+            logging.error(f"Ошибка polling: {e}")
+            time.sleep(5)
 
 if __name__ == '__main__':
     main()
