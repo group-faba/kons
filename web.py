@@ -5,8 +5,12 @@ import sqlite3
 from flask import Flask, request, redirect
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
-from telegram import Update, Bot
-from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+)
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
 from datetime import date, datetime, timedelta
 from googleapiclient.discovery import build
@@ -88,11 +92,12 @@ def oauth2callback():
     conn.close()
     return 'Календарь успешно привязан! Вернитесь в Telegram и введите /start.'
 
-# ========== Telegram-webhook setup ==========
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot, None, workers=0, use_context=True)
+# ========== Telegram Webhook Setup ==========
+# Создаём приложение Telegram
+application = ApplicationBuilder().token(TOKEN).build()
+bot = application.bot
 
-# ========== Хелперы Google Calendar ==========
+# Хелперы для Google Calendar
 def get_creds(user_id):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
@@ -130,7 +135,7 @@ def generate_free_slots(user_id, dt: date):
         slots.append(f"{h:02d}:00")
     return slots
 
-# ========== Диалоговые состояния ==========
+# Диалоговые состояния и данные
 REGIONS     = ['Москва','Санкт-Петербург','Краснодарский край']
 INDUSTRIES  = ['Психология','Финансы','Юриспруденция']
 SPECIALISTS = [
@@ -140,73 +145,79 @@ SPECIALISTS = [
 ]
 CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC, CHOICE_DATE, CHOICE_TIME = range(5)
 
-# ========== Handlers ==========
-def cmd_link(update, context):
+# Handlers
+async def cmd_link(update: Update, context):
     uid = update.effective_user.id
     url = f"{REDIRECT_URI.replace('/oauth2callback','/authorize')}?state={uid}"
-    update.message.reply_text(f"Привяжи календарь по ссылке:\n{url}")
+    await update.message.reply_text(f"Привяжи календарь по ссылке:\n{url}")
 
-def cmd_start(update, context):
+async def cmd_start(update: Update, context):
     uid = update.effective_user.id
     if not get_creds(uid):
-        return cmd_link(update, context)
+        return await cmd_link(update, context)
     kb = [[InlineKeyboardButton(r,callback_data=r)] for r in REGIONS]
-    update.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
 
-def cb_region(update, context):
+async def cb_region(update: Update, context):
     r = update.callback_query.data
+    await update.callback_query.answer()
     context.user_data['region'] = r
     kb = [[InlineKeyboardButton(i,callback_data=i)] for i in INDUSTRIES]
-    update.callback_query.edit_message_text(f"Регион: {r}\nВыберите отрасль:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text(f"Регион: {r}\nВыберите отрасль:", reply_markup=InlineKeyboardMarkup(kb))
 
-def cb_industry(update, context):
+async def cb_industry(update: Update, context):
     i = update.callback_query.data
+    await update.callback_query.answer()
     context.user_data['industry'] = i
     filtered = [s for s in SPECIALISTS if s['region']==context.user_data['region'] and s['industry']==i]
     kb = [[InlineKeyboardButton(s['name'],callback_data=s['id'])] for s in filtered]
-    update.callback_query.edit_message_text(f"Отрасль: {i}\nВыберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text(f"Отрасль: {i}\nВыберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
 
-def cb_spec(update, context):
+async def cb_spec(update: Update, context):
     sid = update.callback_query.data
+    await update.callback_query.answer()
     spec = next(s for s in SPECIALISTS if s['id']==sid)
     context.user_data['spec'] = spec
     cal, step = DetailedTelegramCalendar(min_date=date.today(), locale='ru').build()
-    update.callback_query.edit_message_text("Выберите дату:", reply_markup=cal)
+    await update.callback_query.edit_message_text("Выберите дату:", reply_markup=cal)
 
-def cb_date(update, context):
-    res, key, step = DetailedTelegramCalendar(locale='ru').process(update.callback_query.data)
-    if not res and key:
-        update.callback_query.edit_message_text(f"Выберите {LSTEP[step]}", reply_markup=key)
+async def cb_date(update: Update, context):
+    result, key, step = DetailedTelegramCalendar(locale='ru').process(update.callback_query.data)
+    if not result and key:
+        await update.callback_query.edit_message_text(f"Выберите {LSTEP[step]}", reply_markup=key)
         return
-    context.user_data['date'] = res
-    slots = generate_free_slots(update.effective_user.id, res)
+    context.user_data['date'] = result
+    slots = generate_free_slots(update.effective_user.id, result)
     kb = [[InlineKeyboardButton(t,callback_data=t)] for t in slots]
-    update.callback_query.edit_message_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.callback_query.edit_message_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
 
-def cb_time(update, context):
+async def cb_time(update: Update, context):
     t = update.callback_query.data
+    await update.callback_query.answer()
     u = update.callback_query.from_user
     spec = context.user_data['spec']
     d = context.user_data['date'].strftime('%d.%m.%Y')
-    update.callback_query.edit_message_text(f"Запись: {spec['name']}, {d} в {t} — подтверждена.")
-    bot.send_message(ADMIN_ID, f"Новая запись от {u.full_name} (id={u.id}): {spec['name']}, {d} в {t}")
+    await update.callback_query.edit_message_text(f"Запись: {spec['name']}, {d} в {t} — подтверждена.")
+    await bot.send_message(ADMIN_ID, f"Новая запись от {u.full_name} (id={u.id}): {spec['name']}, {d} в {t}")
 
-# Регистрация
-dp.add_handler(CommandHandler('link_calendar', cmd_link))
-dp.add_handler(CommandHandler('start', cmd_start))
-dp.add_handler(CallbackQueryHandler(cb_region,   pattern='^Москва|Санкт-Петербург|Краснодарский край$'))
-dp.add_handler(CallbackQueryHandler(cb_industry, pattern='^Психология|Финансы|Юриспруденция$'))
-dp.add_handler(CallbackQueryHandler(cb_spec,     pattern='^spec[123]$'))
-dp.add_handler(CallbackQueryHandler(cb_date,     pattern='^\\d{1,2};\\d{1,2};\\d{4}$'))
-dp.add_handler(CallbackQueryHandler(cb_time,     pattern='^\\d{2}:00$'))
+# Регистрируем хендлеры
+application.add_handler(CommandHandler('link_calendar', cmd_link))
+application.add_handler(CommandHandler('start', cmd_start))
+application.add_handler(CallbackQueryHandler(cb_region,   pattern='^Москва|Санкт-Петербург|Краснодарский край$'))
+application.add_handler(CallbackQueryHandler(cb_industry, pattern='^Психология|Финансы|Юриспруденция$'))
+application.add_handler(CallbackQueryHandler(cb_spec,     pattern='^spec[123]$'))
+application.add_handler(CallbackQueryHandler(cb_date,     pattern='^\\d{1,2};\\d{1,2};\\d{4}$'))
+application.add_handler(CallbackQueryHandler(cb_time,     pattern='^\\d{2}:00$'))
 
 # Webhook endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    dp.process_update(Update.de_json(request.json, bot))
+    update = Update.de_json(request.get_json(force=True), bot)
+    application.dispatcher.process_update(update)
     return 'OK', 200
 
 if __name__ == '__main__':
     init_db()
+    # Устанавливаем webhook
     bot.set_webhook(f"{APP_URL}/webhook")
     app.run(host='0.0.0.0', port=PORT)
