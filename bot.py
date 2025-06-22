@@ -1,155 +1,124 @@
 import os
 import json
 import logging
-import asyncio
-
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes
 )
 
-# ——— Конфигурация из ENV ———
-TOKEN            = os.getenv('TELEGRAM_TOKEN')
-ADMIN_CHAT_ID    = int(os.getenv('ADMIN_CHAT_ID', '0'))
-APP_URL          = os.getenv('APP_URL').rstrip('/')  # https://your-service.onrender.com
-PORT             = int(os.getenv('PORT', '8080'))
-GSPREAD_JSON     = os.getenv('GSPREAD_CREDENTIALS_JSON')
-SHEET_ID         = os.getenv('SHEET_ID')
-
+# ========== Конфигурация ==========
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+TOKEN      = os.environ['TELEGRAM_TOKEN']
+ADMIN_ID   = int(os.environ.get('ADMIN_CHAT_ID', '0'))
+SHEET_ID   = os.environ['SHEET_ID']
+CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
+PORT       = int(os.environ.get('PORT', '8080'))
+APP_URL    = os.environ['APP_URL']
 
-# ——— Инициализация Google Sheets ———
-creds_dict = json.loads(GSPREAD_JSON)
-scopes = [
-    'https://spreadsheets.google.com/feeds',
-    'https://www.googleapis.com/auth/drive'
-]
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scopes)
+# ========== Google Sheets ==========
+SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
 gc    = gspread.authorize(creds)
 sheet = gc.open_by_key(SHEET_ID).sheet1
-records = sheet.get_all_records()  # list of dicts
 
-# ——— Conversation States ———
+def get_rows():
+    return sheet.get_all_records()
+
+# ========== Состояния ==========
 CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC = range(3)
 
-# ——— Utility to get unique values ———
-def unique_vals(field, filter_by=None):
+# ========== Handlers ==========
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    rows = get_rows()
     seen = set()
-    for r in records:
-        if filter_by:
-            key, val = next(iter(filter_by.items()))
-            if r.get(key) != val:
-                continue
-        v = r.get(field)
-        if v and v not in seen:
-            seen.add(v)
-            yield v
-
-# ——— Initialize Telegram application and event loop ———
-bot_app = ApplicationBuilder().token(TOKEN).build()
-# Create dedicated asyncio loop for Telegram
-BOT_LOOP = asyncio.new_event_loop()
-asyncio.set_event_loop(BOT_LOOP)
-# Initialize the application
-BOT_LOOP.run_until_complete(bot_app.initialize())
-# Set webhook
-BOT_LOOP.run_until_complete(bot_app.bot.delete_webhook(drop_pending_updates=True))
-BOT_LOOP.run_until_complete(bot_app.bot.set_webhook(f"{APP_URL}/webhook"))
-
-# ——— Handlers ———
-async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    kb = [[InlineKeyboardButton(r, callback_data=r)] for r in unique_vals('Регион')]
-    await update.message.reply_text('Выберите регион:', reply_markup=InlineKeyboardMarkup(kb))
+    buttons = []
+    for r in rows:
+        if r['Регион'] not in seen:
+            seen.add(r['Регион'])
+            buttons.append([InlineKeyboardButton(r['Регион'], callback_data=r['Регион'])])
+    await update.message.reply_text('Выберите регион:', reply_markup=InlineKeyboardMarkup(buttons))
     return CHOICE_REGION
 
-async def region_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     region = update.callback_query.data
     ctx.user_data['region'] = region
-    kb = [[InlineKeyboardButton(i, callback_data=i)] for i in unique_vals('Сфера', {'Регион': region})]
-    await update.callback_query.edit_message_text(
-        f"Регион: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb)
-    )
+    rows = get_rows()
+    seen = set()
+    buttons = []
+    for r in rows:
+        if r['Регион'] == region and r['Сфера'] not in seen:
+            seen.add(r['Сфера'])
+            buttons.append([InlineKeyboardButton(r['Сфера'], callback_data=r['Сфера'])])
+    await update.callback_query.edit_message_text(f'Регион: {region}\nВыберите сферу:',
+                                                 reply_markup=InlineKeyboardMarkup(buttons))
     return CHOICE_INDUSTRY
 
-async def industry_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_industry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     industry = update.callback_query.data
     ctx.user_data['industry'] = industry
-    options = [r for r in records if r['Регион'] == ctx.user_data['region'] and r['Сфера'] == industry]
-    ctx.user_data['options'] = options
-    kb = [[InlineKeyboardButton(opt['ФИО'], callback_data=str(i))] for i, opt in enumerate(options)]
-    await update.callback_query.edit_message_text(
-        f"Сфера: {industry}\nВыберите консультанта:", reply_markup=InlineKeyboardMarkup(kb)
-    )
+    rows = get_rows()
+    specs = [r for r in rows if r['Регион'] == ctx.user_data['region'] and r['Сфера'] == industry]
+    ctx.user_data['specs'] = specs
+    buttons = [[InlineKeyboardButton(s['ФИО'], callback_data=str(i))] for i, s in enumerate(specs)]
+    await update.callback_query.edit_message_text(f'Сфера: {industry}\nВыберите консультанта:',
+                                                 reply_markup=InlineKeyboardMarkup(buttons))
     return CHOICE_SPEC
 
-async def spec_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     idx = int(update.callback_query.data)
-    spec = ctx.user_data['options'][idx]
-    text = (
-        f"Вы выбрали: {spec['ФИО']}\n"
-        f"Регион: {ctx.user_data['region']}\n"
-        f"Сфера: {ctx.user_data['industry']}"
+    spec = ctx.user_data['specs'][idx]
+    await update.callback_query.edit_message_text(f"Вы выбрали: {spec['ФИО']}")
+    url = spec.get('Сертификат')
+    if url:
+        await ctx.bot.send_photo(chat_id=update.effective_chat.id, photo=url)
+    user = update.effective_user
+    await ctx.bot.send_message(ADMIN_ID,
+        f"Новая запись: {user.full_name} (id={user.id}) -> {spec['ФИО']} [{ctx.user_data['region']}/{spec['Сфера']}]"
     )
-    chat_id = update.effective_chat.id
-    cert_url = spec.get('Сертификат')
-    if cert_url:
-        await ctx.bot.send_photo(chat_id=chat_id, photo=cert_url, caption=text)
-    else:
-        await ctx.bot.send_message(chat_id=chat_id, text=text)
-    if ADMIN_CHAT_ID:
-        user = update.callback_query.from_user
-        await ctx.bot.send_message(
-            ADMIN_CHAT_ID,
-            f"Новая запись от {user.full_name} (id={user.id}): {spec['ФИО']} — "
-            f"{ctx.user_data['region']}/{ctx.user_data['industry']}"
-        )
     return ConversationHandler.END
 
-async def cancel_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('Отменено.')
     return ConversationHandler.END
 
-# Register handlers
-conv = ConversationHandler(
-    entry_points=[CommandHandler('start', start_cmd)],
-    states={
-        CHOICE_REGION:   [CallbackQueryHandler(region_cb)],
-        CHOICE_INDUSTRY: [CallbackQueryHandler(industry_cb)],
-        CHOICE_SPEC:     [CallbackQueryHandler(spec_cb)],
-    },
-    fallbacks=[CommandHandler('cancel', cancel_cb)],
-)
-bot_app.add_handler(conv)
-
-# ——— Flask Webhook Server ———
+# ========== Flask и Webhook ==========
 app = Flask(__name__)
 
-@app.route('/', methods=['GET'])
+@app.route('/')
 def health():
     return 'OK', 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, bot_app.bot)
-    try:
-        # Schedule processing on BOT_LOOP
-        BOT_LOOP.call_soon_threadsafe(lambda: asyncio.create_task(bot_app.process_update(update)))
-    except Exception:
-        logger.exception("❌ Ошибка при обработке update")
-    return 'OK', 200
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    # вызываем асинхронно
+    import asyncio
+    asyncio.run(application.process_update(update))
+    return 'ok', 200
 
-# ——— Run Flask for local debugging ———
+# ========== Application ==========
+application = ApplicationBuilder().token(TOKEN).build()
+conv = ConversationHandler(
+    entry_points=[CommandHandler('start', cmd_start)],
+    states={
+        CHOICE_REGION:   [CallbackQueryHandler(cb_region)],
+        CHOICE_INDUSTRY: [CallbackQueryHandler(cb_industry)],
+        CHOICE_SPEC:     [CallbackQueryHandler(cb_spec)],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+)
+application.add_handler(conv)
+
+# ========== Запуск ==========
 if __name__ == '__main__':
+    # set webhook
+    import requests
+    requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={APP_URL}/webhook")
     app.run(host='0.0.0.0', port=PORT)
