@@ -135,16 +135,7 @@ def health():
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, bot_app.bot)
-    # фоновая обработка
-    asyncio.get_event_loop().create_task(bot_app.process_update(update))
+    # синхронный вызов PTB handler
+    import asyncio
+    asyncio.run(bot_app.process_update(update))
     return 'OK', 200
-
-# ——— Set Webhook on Startup ———
-async def set_wh():
-    await bot_app.bot.delete_webhook(drop_pending_updates=True)
-    await bot_app.bot.set_webhook(f"{APP_URL}/webhook")
-asyncio.run(set_wh())
-
-# ——— Run Flask Locally ———
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT)
