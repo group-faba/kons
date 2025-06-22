@@ -1,28 +1,32 @@
 import os
+from flask import Flask, request
+from telegram import Update, Bot
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes
+)
 import logging
 import asyncio
-from flask import Flask, request
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler
 
-TOKEN = os.environ['TELEGRAM_TOKEN']
+TOKEN = os.environ["TELEGRAM_TOKEN"]
 
 app = Flask(__name__)
-application = ApplicationBuilder().token(TOKEN).build()
 
-@app.route('/')
+bot_app = ApplicationBuilder().token(TOKEN).build()
+
+@app.route("/")
 def health():
-    return 'OK', 200
+    return "OK", 200
 
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    # Получаем event loop, создаём задачу
-    loop = asyncio.get_event_loop()
-    loop.create_task(application.process_update(update))
-    return 'OK', 200
+    update = Update.de_json(request.get_json(force=True), bot_app.bot)
+    asyncio.get_event_loop().create_task(bot_app.process_update(update))
+    return "OK", 200
 
-async def start(update: Update, context):
-    await update.message.reply_text('Привет!')
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет, бот работает!")
 
-application.add_handler(CommandHandler('start', start))
+bot_app.add_handler(CommandHandler("start", start))
+
+if __name__ == "__main__":
+    bot_app.run_polling()
