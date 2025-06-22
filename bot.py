@@ -135,7 +135,10 @@ def health():
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, bot_app.bot)
-    # синхронный вызов PTB handler
-    import asyncio
-    asyncio.run(bot_app.process_update(update))
+    try:
+        # синхронный запуск обработки
+        import asyncio
+        asyncio.run(bot_app.process_update(update))
+    except Exception:
+        logger.exception("Ошибка в process_update")
     return 'OK', 200
