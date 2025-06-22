@@ -9,6 +9,7 @@ from telegram.ext import (
     Application, CommandHandler,
     CallbackQueryHandler, ConversationHandler, ContextTypes
 )
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ['TELEGRAM_TOKEN']
@@ -27,7 +28,6 @@ rows = sheet.get_all_records()
 
 CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC = range(3)
 
-# ---- Handlers ----
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     seen = set()
     buttons = []
@@ -106,11 +106,14 @@ def index():
 def webhook():
     if request.method == "POST":
         update = Update.de_json(request.get_json(force=True), application.bot)
-        # ВАЖНО: здесь нужен run вместо create_task
-        import asyncio
-        asyncio.run(application.process_update(update))
+        # Важно: обязательно инициализировать application!
+        asyncio.run(init_and_process(update))
     return "OK", 200
 
+async def init_and_process(update):
+    if not application.initialized:
+        await application.initialize()
+    await application.process_update(update)
+
 if __name__ == "__main__":
-    # Важно: не запускай application.run_polling(), только Flask
     app.run(host="0.0.0.0", port=PORT)
