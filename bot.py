@@ -15,7 +15,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-# ——— Конфигурация из ENV ———
+# ——— Настройки из ENV ———
 TOKEN            = os.getenv('TELEGRAM_TOKEN')
 ADMIN_CHAT_ID    = int(os.getenv('ADMIN_CHAT_ID', '0'))
 APP_URL          = os.getenv('APP_URL').rstrip('/')  # https://your-service.onrender.com
@@ -40,7 +40,7 @@ records = sheet.get_all_records()  # list of dicts
 # ——— Conversation States ———
 CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC = range(3)
 
-# ——— Utility to get unique values ———
+# ——— Утилита для сбора уникальных значений ———
 def unique_vals(field, filter_by=None):
     seen = set()
     for r in records:
@@ -53,14 +53,13 @@ def unique_vals(field, filter_by=None):
             seen.add(v)
             yield v
 
-# ——— Initialize Telegram application ———
+# ——— Инициализация Telegram-приложения ———
 bot_app = ApplicationBuilder().token(TOKEN).build()
 
-# >>> Initialize PTB Application (required before process_update)
+# Обязательная инициализация перед process_update
 async def init_app():
     await bot_app.initialize()
-# run initialization
-asyncio.run(init_app()).token(TOKEN).build()
+asyncio.run(init_app())
 
 # ——— Handlers ———
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
@@ -118,7 +117,7 @@ async def cancel_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('Отменено.')
     return ConversationHandler.END
 
-# ——— Register ConversationHandler ———
+# ——— Регистрируем ConversationHandler ———
 conv = ConversationHandler(
     entry_points=[CommandHandler('start', start_cmd)],
     states={
@@ -142,18 +141,17 @@ def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, bot_app.bot)
     try:
-        # synchronous processing of update
         asyncio.run(bot_app.process_update(update))
     except Exception:
         logger.exception("❌ Ошибка при обработке update")
     return 'OK', 200
 
-# ——— Set webhook on startup ———
+# ——— Устанавливаем Webhook при старте ———
 async def set_webhook():
     await bot_app.bot.delete_webhook(drop_pending_updates=True)
     await bot_app.bot.set_webhook(f"{APP_URL}/webhook")
 asyncio.run(set_webhook())
 
-# ——— Run Flask locally ———
+# ——— Локальный запуск Flask ———
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=PORT)
