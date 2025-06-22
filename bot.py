@@ -16,12 +16,12 @@ from telegram.ext import (
 )
 
 # ——— Конфигурация из ENV ———
-TOKEN            = os.environ['TELEGRAM_TOKEN']
-ADMIN_CHAT_ID    = int(os.environ.get('ADMIN_CHAT_ID', '0'))
-APP_URL          = os.environ['APP_URL'].rstrip('/')  # https://your-service.onrender.com
-PORT             = int(os.environ.get('PORT', '8080'))
-GSPREAD_JSON     = os.environ['GSPREAD_CREDENTIALS_JSON']
-SHEET_ID         = os.environ['SHEET_ID']
+TOKEN            = os.getenv('TELEGRAM_TOKEN')
+ADMIN_CHAT_ID    = int(os.getenv('ADMIN_CHAT_ID', '0'))
+APP_URL          = os.getenv('APP_URL').rstrip('/')  # https://your-service.onrender.com
+PORT             = int(os.getenv('PORT', '8080'))
+GSPREAD_JSON     = os.getenv('GSPREAD_CREDENTIALS_JSON')
+SHEET_ID         = os.getenv('SHEET_ID')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,12 +35,12 @@ scopes = [
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scopes)
 gc    = gspread.authorize(creds)
 sheet = gc.open_by_key(SHEET_ID).sheet1
-records = sheet.get_all_records()  # список dict
+records = sheet.get_all_records()  # list of dicts
 
 # ——— Conversation States ———
 CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC = range(3)
 
-# ——— Утилита для сбора уникальных значений ———
+# ——— Utility to get unique values ———
 def unique_vals(field, filter_by=None):
     seen = set()
     for r in records:
@@ -53,7 +53,7 @@ def unique_vals(field, filter_by=None):
             seen.add(v)
             yield v
 
-# ——— Инициализация Telegram Bot ———
+# ——— Initialize Telegram application ———
 bot_app = ApplicationBuilder().token(TOKEN).build()
 
 # ——— Handlers ———
@@ -76,7 +76,7 @@ async def industry_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     industry = update.callback_query.data
     ctx.user_data['industry'] = industry
-    options = [r for r in records if r['Регион']==ctx.user_data['region'] and r['Сфера']==industry]
+    options = [r for r in records if r['Регион'] == ctx.user_data['region'] and r['Сфера'] == industry]
     ctx.user_data['options'] = options
     kb = [[InlineKeyboardButton(opt['ФИО'], callback_data=str(i))] for i, opt in enumerate(options)]
     await update.callback_query.edit_message_text(
@@ -88,17 +88,17 @@ async def spec_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     idx = int(update.callback_query.data)
     spec = ctx.user_data['options'][idx]
-    text = (f"Вы выбрали: {spec['ФИО']}\n"
-            f"Регион: {ctx.user_data['region']}\n"
-            f"Сфера: {ctx.user_data['industry']}")
+    text = (
+        f"Вы выбрали: {spec['ФИО']}\n"
+        f"Регион: {ctx.user_data['region']}\n"
+        f"Сфера: {ctx.user_data['industry']}"
+    )
     chat_id = update.effective_chat.id
     cert_url = spec.get('Сертификат')
     if cert_url:
-        # отправка фото сертификата
         await ctx.bot.send_photo(chat_id=chat_id, photo=cert_url, caption=text)
     else:
         await ctx.bot.send_message(chat_id=chat_id, text=text)
-    # уведомление админу
     if ADMIN_CHAT_ID:
         user = update.callback_query.from_user
         await ctx.bot.send_message(
@@ -112,7 +112,7 @@ async def cancel_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('Отменено.')
     return ConversationHandler.END
 
-# ——— Register Handlers ———
+# ——— Register ConversationHandler ———
 conv = ConversationHandler(
     entry_points=[CommandHandler('start', start_cmd)],
     states={
@@ -136,9 +136,18 @@ def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, bot_app.bot)
     try:
-        # синхронный запуск обработки
-        import asyncio
+        # synchronous processing of update
         asyncio.run(bot_app.process_update(update))
     except Exception:
-        logger.exception("Ошибка в process_update")
+        logger.exception("❌ Ошибка при обработке update")
     return 'OK', 200
+
+# ——— Set webhook on startup ———
+async def set_webhook():
+    await bot_app.bot.delete_webhook(drop_pending_updates=True)
+    await bot_app.bot.set_webhook(f"{APP_URL}/webhook")
+asyncio.run(set_webhook())
+
+# ——— Run Flask locally ———
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=PORT)
