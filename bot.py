@@ -56,6 +56,12 @@ def unique_vals(field, filter_by=None):
 # ——— Initialize Telegram application ———
 bot_app = ApplicationBuilder().token(TOKEN).build()
 
+# >>> Initialize PTB Application (required before process_update)
+async def init_app():
+    await bot_app.initialize()
+# run initialization
+asyncio.run(init_app()).token(TOKEN).build()
+
 # ——— Handlers ———
 async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     kb = [[InlineKeyboardButton(r, callback_data=r)] for r in unique_vals('Регион')]
