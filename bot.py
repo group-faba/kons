@@ -112,8 +112,11 @@ conv = ConversationHandler(
 application.add_handler(conv)
 
 # ========== Запуск ==========
-if __name__ == '__main__':
-    # запускаем Flask health-check параллельно
-    threading.Thread(target=run_flask, daemon=True).start()
-    # polling без webhook
-    application.run_polling()
+if __name__ == "__main__":
+    init_db()
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="webhook",
+        webhook_url=f"{APP_URL}/webhook",
+    )
