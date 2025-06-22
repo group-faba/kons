@@ -103,12 +103,10 @@ def index():
     return "OK", 200
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        # Важно: обязательно инициализировать application!
-        asyncio.run(init_and_process(update))
-    return "OK", 200
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.process_update(update)
+    return 'OK', 200
 
 async def init_and_process(update):
     if not application.initialized:
