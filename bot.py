@@ -132,18 +132,19 @@ def health():
     return 'OK', 200
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, app_bot.bot)
-    await app_bot.process_update(update)
+    # синхронно запускаем обработку
+    asyncio.run(app_bot.process_update(update))
     return 'OK', 200
 
 # ——— Установка webhook при старте ———
-async def set_webhook():
+async def sethook():
     await app_bot.bot.delete_webhook(drop_pending_updates=True)
     await app_bot.bot.set_webhook(f"{APP_URL}/webhook")
-asyncio.run(set_webhook())
+asyncio.run(sethook())
 
-# ——— Запуск для локальной разработки ———
+# ——— Запуск Flask для локальной разработки ———
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=PORT)
