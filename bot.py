@@ -1,6 +1,7 @@
 import os
 import json
 import gspread
+import asyncio
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -95,10 +96,13 @@ conv = ConversationHandler(
 )
 application.add_handler(conv)
 
-# ========== Webhook Setup ==========
-# Удаляем старый и регистрируем новый webhook сразу при импорте
-application.bot.delete_webhook(drop_pending_updates=True)
-application.bot.set_webhook(f"{APP_URL}/webhook")
+# ========== Webhook Setup (awaited) ==========
+# создаём и используем отдельный event loop для регистрации вебхука
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+loop.run_until_complete(application.bot.set_webhook(f"{APP_URL}/webhook"))
+loop.close()
 
 # ========== Flask (webhook + health-check) ==========
 app = Flask(__name__)
