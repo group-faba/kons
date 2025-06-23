@@ -92,8 +92,14 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     text = f"Вы выбрали: {spec['ФИО']}\n\n{description}"
 
     if cert_url:
-        await ctx.bot.send_photo(chat_id=update.effective_chat.id, photo=cert_url, caption=text, reply_markup=InlineKeyboardMarkup(kb))
-        await update.callback_query.delete_message()  # чтобы убрать старое сообщение с кнопками
+        # Удаляем старое сообщение с кнопками, чтобы не было дубликатов
+        try:
+            await update.callback_query.delete_message()
+        except:
+            pass
+        # Сначала фото, потом кнопки отдельным сообщением
+        await ctx.bot.send_photo(chat_id=update.effective_chat.id, photo=cert_url, caption=text)
+        await ctx.bot.send_message(chat_id=update.effective_chat.id, text="Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
     else:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
