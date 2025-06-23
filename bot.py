@@ -108,6 +108,7 @@ conv = ConversationHandler(
         CHOICE_SPEC:     [CallbackQueryHandler(cb_spec)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
+    allow_reentry=True  # ← вот это ключевое!
 )
 application.add_handler(conv)
 
