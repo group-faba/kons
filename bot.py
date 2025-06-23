@@ -34,23 +34,20 @@ SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/a
 creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
 gc    = gspread.authorize(creds)
 sheet = gc.open_by_key(SHEET_ID).sheet1
-
-def get_rows():
-    return sheet.get_all_records()
+rows  = sheet.get_all_records()
 
 # ========== Состояния ==========
-CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC, CONFIRM_SPEC = range(4)
+CHOICE_REGION, CHOICE_INDUSTRY, CHOICE_SPEC, CHOICE_CONFIRM = range(4)
 
 # ========== Handlers ==========
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    rows = get_rows()
-    seen = set()
-    buttons = []
+    ctx.user_data.clear()
+    # Уникальные регионы
+    seen = set(); buttons = []
     for r in rows:
         if r['Регион'] not in seen:
             seen.add(r['Регион'])
             buttons.append([InlineKeyboardButton(r['Регион'], callback_data=r['Регион'])])
-    ctx.user_data.clear()
     await update.message.reply_text('Выберите регион:', reply_markup=InlineKeyboardMarkup(buttons))
     return CHOICE_REGION
 
@@ -58,79 +55,62 @@ async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     region = update.callback_query.data
     ctx.user_data['region'] = region
-    rows = get_rows()
-    seen = set()
-    buttons = []
+    # Уникальные сферы
+    seen = set(); buttons = []
     for r in rows:
-        if r['Регион'] == region and r['Сфера'] not in seen:
+        if r['Регион']==region and r['Сфера'] not in seen:
             seen.add(r['Сфера'])
             buttons.append([InlineKeyboardButton(r['Сфера'], callback_data=r['Сфера'])])
-    await update.callback_query.edit_message_text(
-        f'Регион: {region}\nВыберите сферу:',
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    await update.callback_query.edit_message_text(f'Регион: {region}\nВыберите сферу:', reply_markup=InlineKeyboardMarkup(buttons))
     return CHOICE_INDUSTRY
 
 async def cb_industry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
     industry = update.callback_query.data
     ctx.user_data['industry'] = industry
-    rows = get_rows()
-    specs = [r for r in rows if r['Регион'] == ctx.user_data['region'] and r['Сфера'] == industry]
+    # Все консультанты по фильтру
+    specs = [r for r in rows if r['Регион']==ctx.user_data['region'] and r['Сфера']==industry]
     ctx.user_data['specs'] = specs
-    buttons = [
-        [InlineKeyboardButton(s['ФИО'], callback_data=f'spec_{i}')] for i, s in enumerate(specs)
+    ctx.user_data['current_spec_idx'] = 0
+    return await show_spec(update, ctx)
+
+async def show_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    idx = ctx.user_data.get('current_spec_idx', 0)
+    spec = ctx.user_data['specs'][idx]
+    name = spec['ФИО']
+    desc = spec['Описание']
+    photo = spec['Сертификат']
+    text = f'Вы выбрали: {name}\n\n{desc}'
+    kb = [
+        [InlineKeyboardButton('Назад', callback_data='back')],
+        [InlineKeyboardButton('Выбрать этого специалиста', callback_data='choose')]
     ]
-    await update.callback_query.edit_message_text(
-        f'Сфера: {industry}\nВыберите консультанта:',
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    # Отправляем картинку и описание как новое сообщение!
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(kb))
+    else:
+        await update.message.reply_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(kb))
     return CHOICE_SPEC
 
 async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.callback_query.answer()
-    idx = int(update.callback_query.data.replace('spec_', ''))
-    ctx.user_data['cur_spec_idx'] = idx
-    spec = ctx.user_data['specs'][idx]
-    buttons = [
-        [InlineKeyboardButton("Назад", callback_data="back")],
-        [InlineKeyboardButton("Выбрать этого специалиста", callback_data=f"choose_{idx}")]
-    ]
-    caption = f"Вы выбрали: {spec['ФИО']}\n\n{spec.get('Описание','')}"
-    await ctx.bot.send_photo(
-        chat_id=update.effective_chat.id,
-        photo=spec['Сертификат'],
-        caption=caption,
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return CONFIRM_SPEC
-
-async def cb_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.callback_query.answer()
-    # Вернуться к выбору консультантов
-    specs = ctx.user_data['specs']
-    industry = ctx.user_data['industry']
-    buttons = [
-        [InlineKeyboardButton(s['ФИО'], callback_data=f'spec_{i}')] for i, s in enumerate(specs)
-    ]
-    await update.callback_query.edit_message_text(
-        f'Сфера: {industry}\nВыберите консультанта:',
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-    return CHOICE_SPEC
-
-async def cb_choose(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.callback_query.answer()
-    idx = int(update.callback_query.data.replace('choose_', ''))
-    spec = ctx.user_data['specs'][idx]
-    user = update.effective_user
-    # Здесь запись админу
-    await ctx.bot.send_message(
-        ADMIN_ID,
-        f"Новая запись: {user.full_name} (id={user.id}) -> {spec['ФИО']} [{spec['Регион']}/{spec['Сфера']}]"
-    )
-    await update.callback_query.edit_message_text('Вы записаны на консультацию!')
-    return ConversationHandler.END
+    data = update.callback_query.data
+    if data == 'back':
+        idx = ctx.user_data.get('current_spec_idx', 0)
+        if idx > 0:
+            ctx.user_data['current_spec_idx'] = idx - 1
+        return await show_spec(update, ctx)
+    elif data == 'choose':
+        idx = ctx.user_data.get('current_spec_idx', 0)
+        spec = ctx.user_data['specs'][idx]
+        user = update.effective_user
+        await update.callback_query.answer()
+        await ctx.bot.send_message(
+            ADMIN_ID,
+            f"Новая запись: {user.full_name} (id={user.id}) -> {spec['ФИО']} [{spec['Регион']}/{spec['Сфера']}]"
+        )
+        await update.callback_query.message.reply_text('Вы записаны на консультацию!\nМожешь снова нажать /start')
+        return ConversationHandler.END
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('Отменено.')
@@ -143,16 +123,12 @@ conv = ConversationHandler(
     states={
         CHOICE_REGION:   [CallbackQueryHandler(cb_region)],
         CHOICE_INDUSTRY: [CallbackQueryHandler(cb_industry)],
-        CHOICE_SPEC: [
-            CallbackQueryHandler(cb_spec, pattern=r'^spec_\d+$'),
-        ],
-        CONFIRM_SPEC: [
-            CallbackQueryHandler(cb_back, pattern='^back$'),
-            CallbackQueryHandler(cb_choose, pattern=r'^choose_\d+$')
-        ]
+        CHOICE_SPEC:     [CallbackQueryHandler(cb_spec)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
 )
+# Важно! /start должен быть доступен всегда:
+application.add_handler(CommandHandler('start', cmd_start))
 application.add_handler(conv)
 
 # ========== Запуск ==========
