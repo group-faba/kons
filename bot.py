@@ -11,8 +11,6 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
-import threading
-from datetime import datetime
 
 # --- Логирование
 logging.basicConfig(level=logging.INFO)
@@ -28,39 +26,36 @@ gc = gspread.authorize(creds)
 spreadsheet = gc.open_by_key(SHEET_ID)
 
 def get_specialists():
-    """Собрать анкеты всех специалистов из вкладок (кроме 'Лист1')"""
-    specs = []
+    """Вернуть список всех специалистов из вкладок кроме 'Лист1'."""
+    specialists = []
     for ws in spreadsheet.worksheets():
         if ws.title == 'Лист1':
             continue
-        data = ws.get_all_records()
-        if data:
-            card = data[0]
-            card['sheet_name'] = ws.title
-            specs.append(card)
-    return specs
+        records = ws.get_all_records()
+        if records:
+            specialist = records[0]
+            specialist['sheet_name'] = ws.title
+            specialists.append(specialist)
+    return specialists
 
-def get_free_slots(sheet_name):
-    """Собрать свободные слоты для выбранного специалиста"""
-    ws = spreadsheet.worksheet(sheet_name)
-    data = ws.get_all_records()
-    slots = []
-    for row in data[1:]:  # 0 - сама анкета, дальше идут слоты
-        if not row.get('Клиент') and row.get('Дата') and row.get('Время'):
-            slots.append({'Дата': row['Дата'], 'Время': row['Время']})
-    return slots
+def get_regions():
+    """Вернуть уникальные регионы (города) среди всех специалистов."""
+    specs = get_specialists()
+    return sorted(set(spec['Город'] for spec in specs))
 
-# --- Flask healthcheck (на 0.0.0.0!)
+def get_specs_by_region(region):
+    """Вернуть специалистов по региону."""
+    specs = get_specialists()
+    return [spec for spec in specs if spec['Город'] == region]
+
+# --- Flask healthcheck
 app = Flask(__name__)
 @app.route('/')
 def health():
     return 'OK', 200
 
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
-
 # --- Conversation для /register (анкета)
-REG_NAME, REG_CITY, REG_FIELD, REG_DESC = range(4)
+REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите ФИО:")
     return REG_NAME
@@ -82,96 +77,113 @@ async def reg_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def reg_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['desc'] = update.message.text
+    await update.message.reply_text("Пришлите фото сертификата (или любой документ):")
+    return REG_PHOTO
+
+async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        ctx.user_data['photo_file_id'] = file_id
+    else:
+        ctx.user_data['photo_file_id'] = ''
     fio = ctx.user_data['fio']
     tab_name = f"{fio}_{update.effective_user.id}"
     try:
-        ws = spreadsheet.add_worksheet(tab_name, rows="100", cols="10")
+        ws = spreadsheet.add_worksheet(tab_name, rows="10", cols="10")
     except Exception:
         ws = spreadsheet.worksheet(tab_name)
-    ws.clear()
-    ws.append_row(["ФИО", "Город", "Сфера", "Описание", "Telegram ID", "Username"])
+    ws.append_row(["ФИО", "Город", "Сфера", "Описание", "photo_file_id", "Telegram ID", "Username"])
     ws.append_row([
         fio,
         ctx.user_data['city'],
         ctx.user_data['field'],
         ctx.user_data['desc'],
+        ctx.user_data['photo_file_id'],
         update.effective_user.id,
         update.effective_user.username or ''
     ])
-    ws.append_row(["Дата", "Время", "Клиент", "Телеграм ID"])
-    await update.message.reply_text(
-        "Вы зарегистрированы как специалист. Для добавления слотов консультаций напишите /addslot"
-    )
+    await update.message.reply_text("Спасибо, вы зарегистрированы как специалист!")
     return ConversationHandler.END
 
-# --- Conversation для /addslot (добавление слота специалистом)
-ADD_DATE, ADD_TIME = range(2)
-async def addslot_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Введите дату в формате ДД.ММ.ГГГГ:")
-    return ADD_DATE
-
-async def addslot_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data['date'] = update.message.text
-    await update.message.reply_text("Введите время (например 15:00):")
-    return ADD_TIME
-
-async def addslot_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    time_str = update.message.text
-    fio = update.effective_user.full_name
-    tab_name = f"{fio}_{update.effective_user.id}"
-    try:
-        ws = spreadsheet.worksheet(tab_name)
-    except Exception:
-        await update.message.reply_text("Сначала зарегистрируйтесь через /register.")
-        return ConversationHandler.END
-    ws.append_row([ctx.user_data['date'], time_str, "", ""])
-    await update.message.reply_text(f"Слот {ctx.user_data['date']} {time_str} добавлен!")
+async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Отмена регистрации.")
     return ConversationHandler.END
 
-# --- Conversation для /start (запись к специалисту)
-CHOOSING_SPEC, CHOOSING_SLOT = range(2)
+# --- Conversation для /start (выбор специалиста)
+CHOOSING_REGION, CHOOSING_SPEC, SHOW_SPEC = range(3)
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    specs = get_specialists()
-    if not specs:
+    regions = get_regions()
+    if not regions:
         await update.message.reply_text("Нет доступных специалистов.")
         return ConversationHandler.END
     kb = [
-        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=spec['sheet_name'])]
+        [InlineKeyboardButton(region, callback_data=region)]
+        for region in regions
+    ]
+    await update.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
+    return CHOOSING_REGION
+
+async def cb_choose_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    region = update.callback_query.data
+    specs = get_specs_by_region(region)
+    kb = [
+        [InlineKeyboardButton(spec['ФИО'], callback_data=spec['sheet_name'][:64])]
         for spec in specs
     ]
-    await update.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
+    kb.append([InlineKeyboardButton("Назад", callback_data="back_region")])
+    await update.callback_query.edit_message_text(
+        f"Регион: {region}\nВыберите специалиста:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    ctx.user_data['region'] = region
     return CHOOSING_SPEC
 
 async def cb_choose_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    spec_sheet = update.callback_query.data
-    slots = get_free_slots(spec_sheet)
-    if not slots:
-        await update.callback_query.edit_message_text("У специалиста нет свободных слотов.")
-        return ConversationHandler.END
-    kb = [
-        [InlineKeyboardButton(f"{slot['Дата']} {slot['Время']}", callback_data=f"{spec_sheet}|{slot['Дата']}|{slot['Время']}")]
-        for slot in slots
-    ]
-    await update.callback_query.edit_message_text("Выберите дату и время:", reply_markup=InlineKeyboardMarkup(kb))
-    return CHOOSING_SLOT
-
-async def cb_choose_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    data = update.callback_query.data.split('|')
-    spec_sheet, date, time = data[0], data[1], data[2]
-    ws = spreadsheet.worksheet(spec_sheet)
-    rows = ws.get_all_values()
-    for idx, row in enumerate(rows):
-        if len(row) >= 2 and row[0] == date and row[1] == time and (len(row) < 3 or not row[2]):
-            ws.update_cell(idx+1, 3, update.effective_user.full_name)
-            ws.update_cell(idx+1, 4, str(update.effective_user.id))
-            await update.callback_query.edit_message_text(
-                f"Вы записались на консультацию {date} в {time} к специалисту!"
-            )
+    sheet_name = update.callback_query.data
+    if sheet_name == "back_region":
+        return await cmd_start(update, ctx)
+    try:
+        ws = spreadsheet.worksheet(sheet_name)
+        rows = ws.get_all_records()
+        if not rows:
+            await update.callback_query.edit_message_text("Данные не найдены.")
             return ConversationHandler.END
-    await update.callback_query.edit_message_text("Слот уже занят.")
-    return ConversationHandler.END
+        spec = rows[0]
+        text = f"{spec['ФИО']}\n{spec['Описание']}"
+        kb = [[InlineKeyboardButton("Назад", callback_data=f"back_spec_{ctx.user_data['region']}")]]
+        if spec.get('photo_file_id'):
+            await update.callback_query.message.reply_photo(
+                photo=spec['photo_file_id'],
+                caption=text,
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            await update.callback_query.delete_message()
+        else:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        ctx.user_data['last_menu'] = True
+        return SHOW_SPEC
+    except Exception as e:
+        await update.callback_query.edit_message_text(f"Ошибка: {e}")
+        return ConversationHandler.END
+
+async def cb_back_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    region = ctx.user_data.get('region', '')
+    specs = get_specs_by_region(region)
+    kb = [
+        [InlineKeyboardButton(spec['ФИО'], callback_data=spec['sheet_name'][:64])]
+        for spec in specs
+    ]
+    kb.append([InlineKeyboardButton("Назад", callback_data="back_region")])
+    await update.callback_query.message.reply_text(
+        f"Регион: {region}\nВыберите специалиста:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    await update.callback_query.delete_message()
+    return CHOOSING_SPEC
 
 # --- Application и Handlers
 application = ApplicationBuilder().token(TOKEN).build()
@@ -183,33 +195,34 @@ conv_reg = ConversationHandler(
         REG_CITY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)],
         REG_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)],
         REG_DESC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
+        REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)],
     },
-    fallbacks=[],
-)
-
-conv_addslot = ConversationHandler(
-    entry_points=[CommandHandler("addslot", addslot_start)],
-    states={
-        ADD_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addslot_date)],
-        ADD_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addslot_time)],
-    },
-    fallbacks=[],
+    fallbacks=[CommandHandler("cancel", reg_cancel)],
 )
 
 conv_main = ConversationHandler(
     entry_points=[CommandHandler("start", cmd_start)],
     states={
-        CHOOSING_SPEC: [CallbackQueryHandler(cb_choose_spec)],
-        CHOOSING_SLOT: [CallbackQueryHandler(cb_choose_slot)],
+        CHOOSING_REGION: [CallbackQueryHandler(cb_choose_region)],
+        CHOOSING_SPEC: [
+            CallbackQueryHandler(cb_choose_spec, pattern=r'^[^b].+'),  # всё кроме back
+            CallbackQueryHandler(cb_choose_spec, pattern='^back_region$'),
+        ],
+        SHOW_SPEC: [
+            CallbackQueryHandler(cb_back_spec, pattern=r'^back_spec_'),
+        ],
     },
     fallbacks=[],
 )
 
 application.add_handler(conv_reg)
-application.add_handler(conv_addslot)
 application.add_handler(conv_main)
 
-# --- Запуск
+# --- Flask run для Render
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT)
+
 if __name__ == "__main__":
+    import threading
     threading.Thread(target=run_flask, daemon=True).start()
     application.run_polling()
