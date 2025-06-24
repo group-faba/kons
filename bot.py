@@ -109,6 +109,9 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отмена регистрации.")
     return ConversationHandler.END
 
+async def cmd_start(update, ctx):
+    print("Получена команда /start")
+
 # --- Conversation для /start (выбор специалиста)
 CHOOSING_REGION, CHOOSING_SPEC, SHOW_SPEC = range(3)
 
