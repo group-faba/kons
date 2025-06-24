@@ -4,12 +4,10 @@ import logging
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, ConversationHandler,
+    MessageHandler, ContextTypes, filters
 )
 
 # --- Логирование
@@ -19,195 +17,137 @@ SHEET_ID   = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 PORT       = int(os.environ.get('PORT', '8080'))
 
-# --- Google Sheets подключение
+# --- Google Sheets
 SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
 gc = gspread.authorize(creds)
-spreadsheet = gc.open_by_key(SHEET_ID)
+sheet = gc.open_by_key(SHEET_ID).sheet1
 
-def get_specialists():
-    """Собрать анкеты всех специалистов из вкладок (кроме 'Лист1')"""
-    specs = []
-    for ws in spreadsheet.worksheets():
-        if ws.title == 'Лист1':
-            continue
-        data = ws.get_all_records()
-        if data:
-            card = data[0]
-            card['sheet_name'] = ws.title
-            specs.append(card)
-    return specs
-
-# --- Flask healthcheck (чтобы Render не засыпал)
+# --- Flask healthcheck
 app = Flask(__name__)
 @app.route('/')
 def health():
     return 'OK', 200
 
-# --- Conversation для /register (анкета)
-REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
+# --- Conversation for /register
+REG_NAME, REG_REGION, REG_FIELD, REG_DESC, REG_CERT = range(5)
+
 async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите ФИО:")
     return REG_NAME
 
 async def reg_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['fio'] = update.message.text
-    await update.message.reply_text("Введите город:")
-    return REG_CITY
+    await update.message.reply_text("Введите регион:")
+    return REG_REGION
 
-async def reg_city(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data['city'] = update.message.text
-    await update.message.reply_text("Введите сферу деятельности:")
+async def reg_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data['region'] = update.message.text
+    await update.message.reply_text("Введите сферу:")
     return REG_FIELD
 
 async def reg_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['field'] = update.message.text
-    await update.message.reply_text("Напишите кратко о себе:")
+    await update.message.reply_text("Опишите себя в двух словах:")
     return REG_DESC
 
 async def reg_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['desc'] = update.message.text
-    await update.message.reply_text("Пришлите фото сертификата (или любой документ):")
-    return REG_PHOTO
+    await update.message.reply_text("Пришлите ссылку на сертификат или напишите 'нет':")
+    return REG_CERT
 
-async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.message.photo:
-        # Получаем file_id самой большой фотки
-        file_id = update.message.photo[-1].file_id
-        ctx.user_data['photo_file_id'] = file_id
-    else:
-        ctx.user_data['photo_file_id'] = ''
-    # Сохраняем анкету на новую вкладку (sheet)
+async def reg_cert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cert = update.message.text
     fio = ctx.user_data['fio']
-    tab_name = f"{fio}_{update.effective_user.id}"
-    try:
-        ws = spreadsheet.add_worksheet(tab_name, rows="10", cols="10")
-    except Exception:
-        ws = spreadsheet.worksheet(tab_name)
-    ws.append_row(["ФИО", "Город", "Сфера", "Описание", "photo_file_id", "Telegram ID", "Username"])
-    ws.append_row([
-        fio,
-        ctx.user_data['city'],
-        ctx.user_data['field'],
-        ctx.user_data['desc'],
-        ctx.user_data['photo_file_id'],
-        update.effective_user.id,
-        update.effective_user.username or ''
-    ])
-    await update.message.reply_text("Спасибо, вы зарегистрированы как специалист!")
+    region = ctx.user_data['region']
+    field = ctx.user_data['field']
+    desc = ctx.user_data['desc']
+    row = [fio, region, field, desc, cert]
+    # Запись в таблицу
+    sheet.append_row(row)
+    await update.message.reply_text("Вы успешно зарегистрированы как специалист!")
     return ConversationHandler.END
 
 async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отмена регистрации.")
     return ConversationHandler.END
 
-# --- Conversation для /start (выбор специалиста)
-CHOOSING_SPEC, SHOW_SPEC = range(2)
+# --- Conversation для /start (как раньше)
+CHOICE_REGION, CHOICE_FIELD, CHOICE_SPEC = range(3)
+
+def get_rows():
+    rows = sheet.get_all_records()
+    return rows
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    specs = get_specialists()
-    if not specs:
-        await update.message.reply_text("Нет доступных специалистов.")
-        return ConversationHandler.END
-    ctx.user_data['specs'] = specs  # сохраняем список для последующего выбора
-    kb = [
-        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=str(i))]
-        for i, spec in enumerate(specs)
-    ]
-    await update.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
-    return CHOOSING_SPEC
+    rows = get_rows()
+    regions = sorted(set(r['Регион'] for r in rows if r['Регион']))
+    kb = [[InlineKeyboardButton(reg, callback_data=reg)] for reg in regions]
+    await update.message.reply_text('Выберите регион:', reply_markup=InlineKeyboardMarkup(kb))
+    return CHOICE_REGION
 
-async def cb_choose_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    region = update.callback_query.data
+    ctx.user_data['region'] = region
+    rows = get_rows()
+    fields = sorted(set(r['Сфера'] for r in rows if r['Регион'] == region))
+    kb = [[InlineKeyboardButton(f, callback_data=f)] for f in fields]
+    await update.callback_query.edit_message_text(f'Регион: {region}\nВыберите сферу:', reply_markup=InlineKeyboardMarkup(kb))
+    return CHOICE_FIELD
+
+async def cb_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    field = update.callback_query.data
+    ctx.user_data['field'] = field
+    rows = get_rows()
+    specs = [r for r in rows if r['Регион'] == ctx.user_data['region'] and r['Сфера'] == field]
+    ctx.user_data['specs'] = specs
+    kb = [[InlineKeyboardButton(s['ФИО'], callback_data=str(i))] for i, s in enumerate(specs)]
+    await update.callback_query.edit_message_text(f'Сфера: {field}\nВыберите консультанта:', reply_markup=InlineKeyboardMarkup(kb))
+    return CHOICE_SPEC
+
+async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     idx = int(update.callback_query.data)
-    specs = ctx.user_data.get('specs', [])
-    if not specs or idx >= len(specs):
-        await update.callback_query.edit_message_text("Специалист не найден.")
-        return ConversationHandler.END
-    spec = specs[idx]
-    text = f"{spec['ФИО']}\n{spec['Описание']}"
-    kb = [[InlineKeyboardButton("Назад", callback_data='back')]]
-    if spec.get('photo_file_id'):
-        await update.callback_query.message.reply_photo(
-            photo=spec['photo_file_id'],
-            caption=text,
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        await update.callback_query.delete_message()
-    else:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-    ctx.user_data['last_menu'] = True
-    return SHOW_SPEC
+    spec = ctx.user_data['specs'][idx]
+    text = f"Вы выбрали: {spec['ФИО']}\n{spec['Описание']}\nСертификат: {spec['Сертификат']}"
+    await update.callback_query.edit_message_text(text)
+    return ConversationHandler.END
 
-async def cb_choose_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    spec_sheet = update.callback_query.data
-    ws = spreadsheet.worksheet(spec_sheet)
-    rows = ws.get_all_records()
-    if not rows:
-        await update.callback_query.edit_message_text("Данные не найдены.")
-        return ConversationHandler.END
-    spec = rows[0]
-    # Показываем карточку с фото
-    text = f"{spec['ФИО']}\n{spec['Описание']}"
-    kb = [[InlineKeyboardButton("Назад", callback_data='back')]]
-    if spec.get('photo_file_id'):
-        await update.callback_query.message.reply_photo(
-            photo=spec['photo_file_id'],
-            caption=text,
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        await update.callback_query.delete_message()  # удаляем предыдущее меню
-    else:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-    ctx.user_data['last_menu'] = True
-    return SHOW_SPEC
+async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text('Отменено.')
+    return ConversationHandler.END
 
-async def cb_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    specs = get_specialists()
-    kb = [
-        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=spec['sheet_name'])]
-        for spec in specs
-    ]
-    await update.callback_query.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
-    await update.callback_query.delete_message()
-    return CHOOSING_SPEC
-
-# --- Application и Handlers
+# --- Запуск Telegram Bot
 application = ApplicationBuilder().token(TOKEN).build()
 
 conv_reg = ConversationHandler(
     entry_points=[CommandHandler("register", reg_start)],
     states={
-        REG_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
-        REG_CITY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)],
+        REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
+        REG_REGION: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_region)],
         REG_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)],
-        REG_DESC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
-        REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)],
+        REG_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
+        REG_CERT: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_cert)],
     },
     fallbacks=[CommandHandler("cancel", reg_cancel)],
 )
 
 conv_main = ConversationHandler(
-    entry_points=[CommandHandler("start", cmd_start)],
+    entry_points=[CommandHandler('start', cmd_start)],
     states={
-        CHOOSING_SPEC: [CallbackQueryHandler(cb_choose_spec)],
-        SHOW_SPEC: [
-            CallbackQueryHandler(cb_back, pattern='^back$'),
-        ],
+        CHOICE_REGION: [CallbackQueryHandler(cb_region)],
+        CHOICE_FIELD: [CallbackQueryHandler(cb_field)],
+        CHOICE_SPEC: [CallbackQueryHandler(cb_spec)],
     },
-    fallbacks=[],
+    fallbacks=[CommandHandler('cancel', cancel)],
 )
 
 application.add_handler(conv_reg)
 application.add_handler(conv_main)
 
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
-
-# --- Запуск
 if __name__ == "__main__":
     import threading
-    threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=app.run, daemon=True).start()
     application.run_polling()
