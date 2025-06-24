@@ -4,57 +4,45 @@ import logging
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ConversationHandler, ContextTypes, filters
 )
 
-# --- Логирование
+# Логирование
 logging.basicConfig(level=logging.INFO)
-TOKEN      = os.environ['TELEGRAM_TOKEN']
-SHEET_ID   = os.environ['SHEET_ID']
+TOKEN = os.environ['TELEGRAM_TOKEN']
+SHEET_ID = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
-PORT       = int(os.environ.get('PORT', '8080'))
+PORT = int(os.environ.get('PORT', '8080'))
 
-# --- Google Sheets подключение
+# Google Sheets подключение
 SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
 gc = gspread.authorize(creds)
 spreadsheet = gc.open_by_key(SHEET_ID)
 
 def get_specialists():
-    """Вернуть список всех специалистов из вкладок кроме 'Лист1'."""
-    specialists = []
+    """Чтение специалистов из всех вкладок, кроме 'Лист1'"""
+    specs = []
     for ws in spreadsheet.worksheets():
         if ws.title == 'Лист1':
             continue
-        records = ws.get_all_records()
-        if records:
-            specialist = records[0]
-            specialist['sheet_name'] = ws.title
-            specialists.append(specialist)
-    return specialists
+        data = ws.get_all_records()
+        if data:
+            d = data[0]
+            d['sheet_name'] = ws.title
+            specs.append(d)
+    return specs
 
-def get_regions():
-    """Вернуть уникальные регионы (города) среди всех специалистов."""
-    specs = get_specialists()
-    return sorted(set(spec['Город'] for spec in specs))
-
-def get_specs_by_region(region):
-    """Вернуть специалистов по региону."""
-    specs = get_specialists()
-    return [spec for spec in specs if spec['Город'] == region]
-
-# --- Flask healthcheck
+# Flask healthcheck
 app = Flask(__name__)
 @app.route('/')
 def health():
     return 'OK', 200
 
-# --- Conversation для /register (анкета)
+# Conversation для /register
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Введите ФИО:")
@@ -109,86 +97,70 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отмена регистрации.")
     return ConversationHandler.END
 
-async def cmd_start(update, ctx):
-    print("Получена команда /start")
-
-# --- Conversation для /start (выбор специалиста)
-CHOOSING_REGION, CHOOSING_SPEC, SHOW_SPEC = range(3)
+# Conversation для /start (выбор специалиста)
+CHOOSING_SPEC, SHOW_SPEC = range(2)
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    regions = get_regions()
-    if not regions:
+    specs = get_specialists()
+    if not specs:
         await update.message.reply_text("Нет доступных специалистов.")
         return ConversationHandler.END
     kb = [
-        [InlineKeyboardButton(region, callback_data=region)]
-        for region in regions
-    ]
-    await update.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
-    return CHOOSING_REGION
-
-async def cb_choose_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    region = update.callback_query.data
-    specs = get_specs_by_region(region)
-    kb = [
-        [InlineKeyboardButton(spec['ФИО'], callback_data=spec['sheet_name'][:64])]
+        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=spec['sheet_name'])]
         for spec in specs
     ]
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_region")])
-    await update.callback_query.edit_message_text(
-        f"Регион: {region}\nВыберите специалиста:",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    ctx.user_data['region'] = region
+    await update.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
     return CHOOSING_SPEC
 
 async def cb_choose_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    sheet_name = update.callback_query.data
-    if sheet_name == "back_region":
-        return await cmd_start(update, ctx)
+    spec_sheet = update.callback_query.data
+    # Проверяем sheet_name: только строка, никаких цифр и пустоты!
+    if not isinstance(spec_sheet, str) or not spec_sheet:
+        await update.callback_query.edit_message_text("Ошибка. Попробуйте ещё раз через /start.")
+        return ConversationHandler.END
     try:
-        ws = spreadsheet.worksheet(sheet_name)
+        ws = spreadsheet.worksheet(spec_sheet)
         rows = ws.get_all_records()
         if not rows:
             await update.callback_query.edit_message_text("Данные не найдены.")
             return ConversationHandler.END
         spec = rows[0]
         text = f"{spec['ФИО']}\n{spec['Описание']}"
-        kb = [[InlineKeyboardButton("Назад", callback_data=f"back_spec_{ctx.user_data['region']}")]]
+        kb = [[InlineKeyboardButton("Назад", callback_data='back')]]
         if spec.get('photo_file_id'):
             await update.callback_query.message.reply_photo(
                 photo=spec['photo_file_id'],
                 caption=text,
                 reply_markup=InlineKeyboardMarkup(kb)
             )
-            await update.callback_query.delete_message()
+            try:
+                await update.callback_query.delete_message()
+            except Exception:
+                pass
         else:
             await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         ctx.user_data['last_menu'] = True
         return SHOW_SPEC
     except Exception as e:
-        await update.callback_query.edit_message_text(f"Ошибка: {e}")
+        await update.callback_query.edit_message_text("Ошибка доступа к анкете.")
         return ConversationHandler.END
 
-async def cb_back_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cb_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    region = ctx.user_data.get('region', '')
-    specs = get_specs_by_region(region)
+    specs = get_specialists()
     kb = [
-        [InlineKeyboardButton(spec['ФИО'], callback_data=spec['sheet_name'][:64])]
+        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=spec['sheet_name'])]
         for spec in specs
     ]
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_region")])
-    await update.callback_query.message.reply_text(
-        f"Регион: {region}\nВыберите специалиста:",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    await update.callback_query.delete_message()
+    await update.callback_query.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
+    try:
+        await update.callback_query.delete_message()
+    except Exception:
+        pass
     return CHOOSING_SPEC
 
-# --- Application и Handlers
+# Application и Handlers
 application = ApplicationBuilder().token(TOKEN).build()
 
 conv_reg = ConversationHandler(
@@ -206,14 +178,8 @@ conv_reg = ConversationHandler(
 conv_main = ConversationHandler(
     entry_points=[CommandHandler("start", cmd_start)],
     states={
-        CHOOSING_REGION: [CallbackQueryHandler(cb_choose_region)],
-        CHOOSING_SPEC: [
-            CallbackQueryHandler(cb_choose_spec, pattern=r'^[^b].+'),  # всё кроме back
-            CallbackQueryHandler(cb_choose_spec, pattern='^back_region$'),
-        ],
-        SHOW_SPEC: [
-            CallbackQueryHandler(cb_back_spec, pattern=r'^back_spec_'),
-        ],
+        CHOOSING_SPEC: [CallbackQueryHandler(cb_choose_spec)],
+        SHOW_SPEC: [CallbackQueryHandler(cb_back, pattern='^back$')],
     },
     fallbacks=[],
 )
@@ -221,11 +187,8 @@ conv_main = ConversationHandler(
 application.add_handler(conv_reg)
 application.add_handler(conv_main)
 
-# --- Flask run для Render
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
-
+# Запуск
 if __name__ == "__main__":
     import threading
-    threading.Thread(target=run_flask, daemon=True).start()
+    threading.Thread(target=app.run, kwargs={"host":"0.0.0.0", "port":PORT}, daemon=True).start()
     application.run_polling()
