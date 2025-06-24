@@ -109,12 +109,35 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not specs:
         await update.message.reply_text("Нет доступных специалистов.")
         return ConversationHandler.END
+    ctx.user_data['specs'] = specs  # сохраняем список для последующего выбора
     kb = [
-        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=spec['sheet_name'])]
-        for spec in specs
+        [InlineKeyboardButton(f"{spec['ФИО']} / {spec['Город']}", callback_data=str(i))]
+        for i, spec in enumerate(specs)
     ]
     await update.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
     return CHOOSING_SPEC
+
+async def cb_choose_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    idx = int(update.callback_query.data)
+    specs = ctx.user_data.get('specs', [])
+    if not specs or idx >= len(specs):
+        await update.callback_query.edit_message_text("Специалист не найден.")
+        return ConversationHandler.END
+    spec = specs[idx]
+    text = f"{spec['ФИО']}\n{spec['Описание']}"
+    kb = [[InlineKeyboardButton("Назад", callback_data='back')]]
+    if spec.get('photo_file_id'):
+        await update.callback_query.message.reply_photo(
+            photo=spec['photo_file_id'],
+            caption=text,
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        await update.callback_query.delete_message()
+    else:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['last_menu'] = True
+    return SHOW_SPEC
 
 async def cb_choose_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -180,8 +203,11 @@ conv_main = ConversationHandler(
 application.add_handler(conv_reg)
 application.add_handler(conv_main)
 
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT)
+
 # --- Запуск
 if __name__ == "__main__":
     import threading
-    threading.Thread(target=app.run, daemon=True).start()
+    threading.Thread(target=run_flask, daemon=True).start()
     application.run_polling()
