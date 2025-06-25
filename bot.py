@@ -229,17 +229,24 @@ async def cb_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     spec_id = update.callback_query.data.split("_", 1)[1]
-    spec = ctx.user_data['specs'][spec_id]
+    # Получаем актуальный список специалистов по региону и сфере
+    region = ctx.user_data['region']
+    field = ctx.user_data['field']
+    specs = _get_specs(region, field)
+    spec = None
+    for s in specs:
+        if str(s['Telegram ID']) == spec_id:
+            spec = s
+            break
+    if not spec:
+        await update.callback_query.edit_message_text("Специалист не найден.")
+        return ConversationHandler.END
     desc = spec.get('Описание', '')
     fio = spec['ФИО']
     photo = spec.get('photo_file_id', '')
+    # Получаем слоты
     slot_str = spec.get('', '') or spec.get('','')
-    row = None
-    users = ws.get_all_records()
-    for u in users:
-        if str(u.get('Telegram ID')) == spec_id:
-            row = u
-            break
+    row = spec
     slots = []
     if row and len(row) > 7 and row.get(''):
         slots = [s for s in row[''].split(';') if s]
@@ -272,7 +279,6 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.delete_message()
     else:
         await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-    ctx.user_data['choosing_spec'] = spec
     return CHOOSING_SLOT
 
 async def cb_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
