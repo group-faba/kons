@@ -246,7 +246,11 @@ async def cb_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     slots_str = ws.cell(row_num, 8).value or ""
     slots = [s for s in slots_str.split(';') if s]
     if slot not in slots:
-        await update.callback_query.edit_message_text("Это время уже занято.")
+        await update.callback_query.message.delete()
+        await update.get_bot().send_message(
+            chat_id=update.effective_user.id,
+            text="Это время уже занято."
+        )
         return ConversationHandler.END
     # Бронируем (удаляем слот)
     slots.remove(slot)
@@ -262,8 +266,10 @@ async def cb_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         pass
-    await update.callback_query.edit_message_text(
-        f"Вы записались к специалисту: {specialist[0]} на {slot}"
+    await update.callback_query.message.delete()
+    await update.get_bot().send_message(
+        chat_id=update.effective_user.id,
+        text=f"Вы записались к специалисту: {specialist[0]} на {slot}"
     )
     return ConversationHandler.END
 
