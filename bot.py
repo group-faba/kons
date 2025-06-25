@@ -233,14 +233,23 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    date = q.data.replace("date_", "")
-    ctx.user_data['chosen_date'] = date
-    slots = ctx.user_data['slots_map'][date]
-    kb = [[InlineKeyboardButton(t, callback_data=f"time_{t}")] for t in sorted(slots)]
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_date")])
-    await q.edit_message_text(
-        f"Дата: {date}\nВыберите время для записи:",
-        reply_markup=InlineKeyboardMarkup(kb)
+    selected_date = q.data.split('_', 1)[-1]
+    ctx.user_data['selected_date'] = selected_date
+
+    # Слоты времени для этой даты
+    specialist = ctx.user_data['selected_specialist']
+    slots = [slot for slot in specialist['slots'] if slot.startswith(selected_date)]
+    times = [slot.split()[1] for slot in slots]
+
+    if not times:
+        # Вместо edit_message_text — reply_text!
+        await q.message.reply_text('Нет свободного времени для этой даты.', reply_markup=back_markup())
+        return
+
+    kb = [[InlineKeyboardButton(time, callback_data=f"time_{time}")] for time in times]
+    kb.append([InlineKeyboardButton("Назад", callback_data="back")])
+
+    await q.message.reply_text(f"Выберите время для записи:", reply_markup=InlineKeyboardMarkup(kb))
     )
     return CLIENT_TIME
 
