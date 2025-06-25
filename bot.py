@@ -195,6 +195,14 @@ async def cb_choose(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # --- Application и Handlers
 application = ApplicationBuilder().token(TOKEN).build()
 
+from telegram.error import TelegramError
+
+async def error_handler(update, context):
+    logging.error(msg="Exception while handling update:", exc_info=context.error)
+    # Можно уведомлять администратора тут
+
+application.add_error_handler(error_handler)
+
 conv_reg = ConversationHandler(
     entry_points=[CommandHandler("register", reg_start)],
     states={
