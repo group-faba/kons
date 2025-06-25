@@ -369,7 +369,10 @@ application.add_handler(conv_reg)
 application.add_handler(conv_slot)
 application.add_handler(conv_main)
 
+def run_flask():
+    app.run(host="0.0.0.0", port=PORT)
+
 if __name__ == "__main__":
     import threading
-    threading.Thread(target=app.run, daemon=True).start()
+    threading.Thread(target=run_flask, daemon=True).start()
     application.run_polling()
