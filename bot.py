@@ -250,7 +250,7 @@ async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_TIME
 
     kb = [[InlineKeyboardButton(t, callback_data=f"time_{t}")] for t in times]
-    kb.append([InlineKeyboardButton("Назад", callback_data="specback")]
+    kb.append([InlineKeyboardButton("Назад", callback_data="specback")])
     await q.message.reply_text("Выберите время для записи:", reply_markup=InlineKeyboardMarkup(kb))
     return CHOOSING_TIME
 
