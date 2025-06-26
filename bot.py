@@ -375,4 +375,4 @@ def run_flask():
 if __name__ == "__main__":
     import threading
     threading.Thread(target=run_flask, daemon=True).start()
-    application
+    application.run_polling()
