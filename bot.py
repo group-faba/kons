@@ -402,7 +402,7 @@ application.add_handler(conv_time)
 application.add_handler(conv_main)
 application.add_handler(CommandHandler("webapp", send_webapp_button))
 
-async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def handle_webapp_data(update, context):
     import json
     data = update.message.web_app_data.data
     form = json.loads(data)
@@ -410,6 +410,7 @@ async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     city = form.get("city", "")
     await update.message.reply_text(f"Спасибо! Получено: {fio}, {city}")
 
+application = ApplicationBuilder().token("ТОКЕН").build()
 application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
 # --- Flask + polling для Render
