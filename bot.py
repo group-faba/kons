@@ -127,7 +127,7 @@ async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton(
             "Открыть мини-приложение",
-            web_app=WebAppInfo(url="https://group-faba.github.io/telegram_kons/")
+        web_app=WebAppInfo(url="https://telegram-kons.vercel.app/")
         )]
     ]
     await update.message.reply_text(
