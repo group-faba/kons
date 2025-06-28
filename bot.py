@@ -5,7 +5,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -122,6 +122,18 @@ async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отмена регистрации.")
     return ConversationHandler.END
+
+async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    kb = [
+        [InlineKeyboardButton(
+            "Открыть мини-приложение",
+            web_app=WebAppInfo(url="https://group-faba.github.io/telegram_kons/")
+        )]
+    ]
+    await update.message.reply_text(
+        "Запусти мини-приложение для записи на консультацию:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 # --- Новый Хендлер /time ---
 TIME_DATE, TIME_SELECT = range(2)
@@ -388,6 +400,7 @@ conv_main = ConversationHandler(
 application.add_handler(conv_reg)
 application.add_handler(conv_time)
 application.add_handler(conv_main)
+application.add_handler(CommandHandler("webapp", send_webapp_button))
 
 # --- Flask + polling для Render
 def run_flask():
