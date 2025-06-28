@@ -350,7 +350,6 @@ async def cb_specback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return CHOOSING_SPEC
 
 # --- Application и Handlers
-application = ApplicationBuilder().token(TOKEN).build()
 
 conv_reg = ConversationHandler(
     entry_points=[CommandHandler("register", reg_start)],
@@ -410,7 +409,6 @@ async def handle_webapp_data(update, context):
     city = form.get("city", "")
     await update.message.reply_text(f"Спасибо! Получено: {fio}, {city}")
 
-application = ApplicationBuilder().token("ТОКЕН").build()
 application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
 # --- Flask + polling для Render
