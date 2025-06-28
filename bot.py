@@ -1,18 +1,14 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-)
 import os
-import json
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = os.environ['TELEGRAM_TOKEN']  # или просто = 'твой_токен'
+TOKEN = os.environ['TELEGRAM_TOKEN']
 
-# --- Кнопка для запуска мини-приложения
 async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton(
             "Открыть мини-приложение",
-            web_app=WebAppInfo(url="https://telegram-kons.vercel.app/")  # тут твой URL
+            web_app=WebAppInfo(url="https://telegram-kons.vercel.app/")
         )]
     ]
     await update.message.reply_text(
@@ -20,8 +16,8 @@ async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# --- Обработка данных из WebApp
 async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    import json
     data = update.message.web_app_data.data
     form = json.loads(data)
     fio = form.get("fio", "")
