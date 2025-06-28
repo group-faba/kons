@@ -34,11 +34,16 @@ async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # --- ПРИЁМ данных из WebApp ---
 async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     import json
-    data = update.message.web_app_data.data
-    form = json.loads(data)
-    fio = form.get("fio", "")
-    city = form.get("city", "")
-    await update.message.reply_text(f"Спасибо! Получено: {fio}, {city}")
+    logging.info("handle_webapp_data CALLED")
+    try:
+        data = update.message.web_app_data.data
+        logging.info(f"DATA: {data}")
+        form = json.loads(data)
+        fio = form.get("fio", "")
+        city = form.get("city", "")
+        await update.message.reply_text(f"Спасибо! Получено: {fio}, {city}")
+    except Exception as e:
+        logging.exception("Ошибка в handle_webapp_data")
 
 # --- PTB Application ---
 application = ApplicationBuilder().token(TOKEN).build()
