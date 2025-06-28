@@ -350,6 +350,7 @@ async def cb_specback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return CHOOSING_SPEC
 
 # --- Application и Handlers
+application = ApplicationBuilder().token(TOKEN).build()
 
 conv_reg = ConversationHandler(
     entry_points=[CommandHandler("register", reg_start)],
@@ -400,6 +401,7 @@ application.add_handler(conv_reg)
 application.add_handler(conv_time)
 application.add_handler(conv_main)
 application.add_handler(CommandHandler("webapp", send_webapp_button))
+application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
 
 async def handle_webapp_data(update, context):
     import json
