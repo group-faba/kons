@@ -2,15 +2,20 @@ import os
 import json
 import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 
-async def webapp_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Шлём кнопку, которая откроет ваше мини-приложение.
-    """
+# ————————————————
+# 1) Кнопка для открытия WebApp
+async def cmd_webapp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [
             InlineKeyboardButton(
@@ -26,33 +31,27 @@ async def webapp_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-async def webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """
-    Принимаем данные из мини-приложения.
-    """
+# ————————————————
+# 2) Приём данных из WebApp
+async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raw = update.message.web_app_data.data
     form = json.loads(raw)
     fio  = form.get("fio", "<нет ФИО>")
     city = form.get("city", "<нет города>")
     await update.message.reply_text(f"Спасибо! Получили: {fio}, город {city}")
 
-async def startup(app):
-    # Удаляем любой ранее установленный webhook, чтобы не было conflict
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Webhook удалён, начинаем polling")
-
+# ————————————————
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # на старте удаляем вебхук
-    app.post_init(startup)
+    # Регистрация хэндлеров
+    app.add_handler(CommandHandler("webapp", cmd_webapp))
+    app.add_handler(
+        MessageHandler(filters.StatusUpdate.WEB_APP_DATA, on_webapp_data)
+    )
 
-    # Хендлеры
-    app.add_handler(CommandHandler("webapp", webapp_cmd))
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, webapp_data))
-
-    # Запускаем polling
-    app.run_polling()
+    # Запускаем polling и сбрасываем все старые обновления сразу
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
