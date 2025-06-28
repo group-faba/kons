@@ -1,9 +1,15 @@
 import os
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = os.environ['TELEGRAM_TOKEN']
+# --- Логирование
+logging.basicConfig(level=logging.INFO)
 
+TOKEN = os.environ.get('TELEGRAM_TOKEN')
+print(f"BOT TOKEN: {TOKEN}")
+
+# --- Web App кнопка
 async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton(
@@ -16,6 +22,7 @@ async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
+# --- Web App data handler
 async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     import json
     data = update.message.web_app_data.data
