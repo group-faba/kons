@@ -1,30 +1,31 @@
-from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler
 import os
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+import json
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
+TOKEN = os.environ.get("TELEGRAM_TOKEN")  # обязательно пропиши токен в переменных окружения
 
-app = Flask(__name__)
-bot = Bot(token=TOKEN)
-dispatcher = Dispatcher(bot=bot, update_queue=None, workers=4, use_context=True)
+async def send_webapp_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [
+        [InlineKeyboardButton(
+            "Открыть мини-приложение",
+            web_app=WebAppInfo(url="https://telegram-kons.vercel.app/")
+        )]
+    ]
+    await update.message.reply_text(
+        "Запусти мини-приложение для записи на консультацию:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
-def start(update, context):
-    update.message.reply_text("Привет! Я живой.")
-
-dispatcher.add_handler(CommandHandler("start", start))
-
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "OK", 200
-
-@app.route("/")
-def index():
-    return "Hello from bot!", 200
+async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = update.message.web_app_data.data
+    form = json.loads(data)
+    fio = form.get("fio", "")
+    city = form.get("city", "")
+    await update.message.reply_text(f"Спасибо! Получено: {fio}, {city}")
 
 if __name__ == "__main__":
-    # Установить вебхук (один раз, например, локально или через отдельную функцию)
-    bot.set_webhook(f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}/{TOKEN}")
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("webapp", send_webapp_button))
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
+    app.run_polling()
