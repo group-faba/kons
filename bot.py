@@ -1,49 +1,51 @@
-import os
-import logging
+# bot.py
+import os, json, logging, threading
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ['TELEGRAM_TOKEN']
-PORT = int(os.environ.get('PORT', '8080'))
+PORT  = int(os.environ.get('PORT', '8080'))
 
+# Flask healthcheck
 app = Flask(__name__)
 @app.route('/')
 def health():
     return 'OK', 200
 
-async def send_webapp_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        [InlineKeyboardButton(
-            "Открыть мини-приложение",
+# Хендлер /webapp — шлёт кнопку
+async def cmd_webapp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    kb = [[
+        InlineKeyboardButton(
+            "Заполнить форму",
             web_app=WebAppInfo(url="https://telegram-kons.vercel.app/")
-        )]
-    ]
+        )
+    ]]
     await update.message.reply_text(
-        "Запусти мини-приложение для записи на консультацию:",
+        "Нажми, чтобы открыть форму:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    import json
-    data = update.message.web_app_data.data
-    form = json.loads(data)
-    fio = form.get("fio", "")
-    city = form.get("city", "")
-    await update.message.reply_text(f"Спасибо! Получено: {fio}, {city}")
+# Хендлер приёма данных из WebApp
+async def on_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    payload = update.message.web_app_data.data  # <- сюда придёт JSON
+    data    = json.loads(payload)
+    fio     = data.get("fio", "")
+    city    = data.get("city", "")
+    await update.message.reply_text(
+        f"✅ Получили: ФИО={fio}, Город={city}"
+    )
 
+# Собираем бота
 application = ApplicationBuilder().token(TOKEN).build()
-application.add_handler(CommandHandler("webapp", send_webapp_button))
-application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data))
+application.add_handler(CommandHandler("webapp",   cmd_webapp))
+application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, on_webapp_data))
 
-def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
+# Запуск polling в фоне, Flask — в главном потоке
+def start_polling():
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=run_flask, daemon=True).start()
-    application.run_polling()
+    threading.Thread(target=start_polling, daemon=True).start()
+    app.run(host="0.0.0.0", port=PORT)
