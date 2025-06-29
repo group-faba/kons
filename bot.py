@@ -1,20 +1,19 @@
 import os
 import json
 import logging
-import threading
-from datetime import datetime
 
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from flask import Flask, request
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
     ContextTypes,
     filters,
 )
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # --- Логирование ---
 logging.basicConfig(level=logging.INFO)
@@ -24,27 +23,34 @@ TOKEN      = os.environ["TELEGRAM_TOKEN"]
 SHEET_ID   = os.environ["SHEET_ID"]
 CREDS_JSON = json.loads(os.environ["GSPREAD_CREDENTIALS_JSON"])
 PORT       = int(os.environ.get("PORT", "8080"))
+APP_URL    = os.environ.get("APP_URL")  # например, "https://kons.onrender.com"
 
-# --- Google Sheets Setup ---
+# --- Google Sheets ---
 SCOPES      = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds       = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
 gc          = gspread.authorize(creds)
-spreadsheet = gc.open_by_key(SHEET_ID)
-worksheet   = spreadsheet.worksheet("Лист1")  # <-- имя вашего листа
+worksheet   = gc.open_by_key(SHEET_ID).worksheet("Лист1")
 
-# --- Flask Healthcheck ---
+# --- Flask для вебхуков и healthcheck ---
 app = Flask(__name__)
 
 @app.route("/")
 def health():
     return "OK", 200
 
-# --- /webapp: даём кнопку пользователю ---
+@app.route(f"/webhook/{TOKEN}", methods=["POST"])
+def telegram_webhook():
+    """Принимаем POST от Telegram и прокидываем в Application."""
+    update = Update.de_json(request.get_json(force=True), bot)
+    application.process_update(update)
+    return "OK", 200
+
+# --- Телеграм-бот handlers ---
 async def cmd_webapp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [[
         InlineKeyboardButton(
             "Заполнить форму",
-            web_app=WebAppInfo(url="https://telegram-kons.vercel.app/")
+            web_app=WebAppInfo(url=f"{APP_URL}/")
         )
     ]]
     await update.message.reply_text(
@@ -52,48 +58,31 @@ async def cmd_webapp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# --- Приём данных из WebApp и запись в Google Sheets ---
 async def handle_webapp_data(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raw  = update.message.web_app_data.data
-    logging.info("WEB_APP_DATA payload: %s", raw)
     data = json.loads(raw)
-    fio     = data.get("fio", "").strip()
-    city    = data.get("city", "").strip()
-    user_id = update.effective_user.id
-    ts      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fio  = data.get("fio", "").strip()
+    city = data.get("city", "").strip()
 
-    # Запись в таблицу
-    worksheet.append_row([ts, fio, city, user_id])
+    # Запись в Google Sheets
+    worksheet.append_row([fio, city])
 
-    # Ответ пользователю
-    await update.message.reply_text(
-        f"✅ Заявка принята:\n"
-        f"• ФИО: {fio}\n"
-        f"• Город: {city}"
-    )
+    await update.message.reply_text(f"✅ Заявка принята: ФИО={fio}, Город={city}")
 
-# --- Сборка и запуск Telegram-бота ---
-application = (
-    ApplicationBuilder()
-    .token(TOKEN)
-    .build()
-)
+# --- Настройка Telegram Application (v.21+) ---
+bot = Bot(token=TOKEN)
+application = Application.builder().token(TOKEN).build()
+
 application.add_handler(CommandHandler("webapp", cmd_webapp))
 application.add_handler(
     MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_webapp_data)
 )
 
-def run_bot():
-    logging.info("🚀 Starting Telegram polling…")
-    application.run_polling(drop_pending_updates=True)
-
 if __name__ == "__main__":
-    # 1) Flask для healthcheck в фоне
-    t = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=PORT),
-        daemon=True
-    )
-    t.start()
+    # 1) Включаем webhook у Telegram на наш endpoint
+    webhook_url = f"{APP_URL}/webhook/{TOKEN}"
+    bot.set_webhook(webhook_url)
+    logging.info("Webhook set to %s", webhook_url)
 
-    # 2) Telegram-polling в главном потоке
-    run_bot()
+    # 2) Запускаем Flask (он же и слушает webhook POST-ы)
+    app.run(host="0.0.0.0", port=PORT)
