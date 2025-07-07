@@ -2,62 +2,55 @@
 
 import os
 import json
-import logging
-from datetime import datetime
-
 from flask import Flask, request, abort
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Bot
+from datetime import datetime
 
-# ——— Настройки ———
-logging.basicConfig(level=logging.INFO)
-
-# Telegram
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_TOKEN"]
-ADMIN_CHAT_ID      = os.environ["ADMIN_CHAT_ID"]  # ваш chat_id для уведомлений
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-# Google Sheets
-SHEET_ID   = os.environ["SHEET_ID"]
+# --- Google Sheets Setup
+SCOPES = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
 CREDS_JSON = json.loads(os.environ["GSPREAD_CREDENTIALS_JSON"])
-SCOPES     = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
-creds      = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
-gc         = gspread.authorize(creds)
-sheet      = gc.open_by_key(SHEET_ID).worksheet("Лист1")
+SHEET_ID = os.environ["SHEET_ID"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
+gc = gspread.authorize(creds)
+sheet = gc.open_by_key(SHEET_ID)
 
-# Flask
 app = Flask(__name__)
 
-@app.route("/")
-def healthcheck():
+@app.route('/')
+def health():
     return "OK", 200
 
-@app.route("/submit", methods=["POST"])
-def submit():
-    if not request.is_json:
-        abort(400, "Expected JSON")
-    data = request.get_json()
-    fio  = data.get("fio","").strip()
-    city = data.get("city","").strip()
-    if not fio or not city:
-        abort(400, "Missing fio or city")
+@app.route('/register-expert', methods=['POST'])
+def register_expert():
+    data = request.json
+    fio = data.get("fio")
+    city = data.get("city")
+    sphere = data.get("sphere")
+    description = data.get("description")
+    photo_url = data.get("photo_url", "")  # если будет фото
 
-    # записываем в Google Sheets
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    sheet.append_row([timestamp, fio, city])
+    if not fio or not city or not sphere or not description:
+        abort(400, "Missing required field")
 
-    # уведомляем админа в Telegram
-    text = (
-        "🆕 Новая заявка из iOS-приложения:\n"
-        f"• Время: {timestamp} UTC\n"
-        f"• ФИО: {fio}\n"
-        f"• Город: {city}"
-    )
-    bot.send_message(chat_id=ADMIN_CHAT_ID, text=text)
+    worksheet = sheet.worksheet("Эксперты")  # Название листа
+    worksheet.append_row([datetime.now().isoformat(), fio, city, sphere, description, photo_url])
+    return {"status": "ok"}, 200
 
-    return {"status":"ok"}, 200
+@app.route('/book-expert', methods=['POST'])
+def book_expert():
+    data = request.json
+    fio = data.get("fio")
+    expert_name = data.get("expert_name")
+    date = data.get("date")
+    time = data.get("time")
+
+    if not fio or not expert_name or not date or not time:
+        abort(400, "Missing required field")
+
+    worksheet = sheet.worksheet("Заявки")  # Название листа
+    worksheet.append_row([datetime.now().isoformat(), fio, expert_name, date, time])
+    return {"status": "ok"}, 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
