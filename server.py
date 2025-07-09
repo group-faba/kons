@@ -14,7 +14,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets'
 ]
 SERVICE_ACCOUNT_FILE = 'credentials.json'
-FOLDER_ID = '<ТВОЙ_GOOGLE_DRIVE_FOLDER_ID>'
+FOLDER_ID = '1Kw2gyUFNKpmWisk9QxA0_I7aJaoGVDth'
 
 creds = Credentials.from_service_account_file(
     SERVICE_ACCOUNT_FILE, scopes=SCOPES
