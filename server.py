@@ -28,7 +28,7 @@ gc = gspread.authorize(creds)
 sheet = gc.open_by_key(os.environ["SHEET_ID"])       # или gc.open("Консультации")
 experts_ws = sheet.worksheet("Эксперты")
 
-FOLDER_ID = os.environ.get("FOLDER_ID")  # ID папки в Google Drive
+FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")  # ID папки в Google Drive
 if not FOLDER_ID:
     raise RuntimeError("Missing DRIVE_FOLDER_ID environment variable")
 
@@ -53,8 +53,10 @@ def register_expert():
         abort(400, "Missing required field")
 
     photo_url = ""
-    if "photo" in request.files:
-        photo_url = upload_file_to_drive(request.files["photo"])
+    if 'photo' in request.files and FOLDER_ID:
+    photo_url = upload_file_to_drive(request.files['photo'])
+else:
+    photo_url = ''
 
     experts_ws.append_row([
         datetime.now().isoformat(),
