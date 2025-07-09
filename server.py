@@ -5,11 +5,12 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import gspread
+from gspread.exceptions import WorksheetNotFound
 from datetime import datetime
 
 app = Flask(__name__)
 
-# — Загружаем сервисный ключ из ENV —
+# 1) Сервисный ключ из ENV
 creds_json = os.environ.get("GSPREAD_CREDENTIALS_JSON")
 if not creds_json:
     raise RuntimeError("Missing GSPREAD_CREDENTIALS_JSON environment variable")
@@ -21,16 +22,24 @@ SCOPES = [
 ]
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 
-# — Настраиваем Google Drive и Sheets —
+# 2) Подключаемся к Drive и Sheets
 drive_service = build("drive", "v3", credentials=creds)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_key(os.environ["SHEET_ID"])
-experts_ws = sheet.worksheet("Эксперты")
-users_ws   = sheet.worksheet("Users")    # Новый лист для онбординга
-bookings_ws = sheet.worksheet("Заявки")
 
-FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")  # Папка для фото
-# Если хотите пропускать фото-загрузку без папки, замените на .get() и уберите RuntimeError
+# 3) Листы
+experts_ws = sheet.worksheet("Эксперты")
+users_ws   = sheet.worksheet("Users")
+
+# Лист «Заявки» — если нет, создаём его автоматически
+try:
+    bookings_ws = sheet.worksheet("Заявки")
+except WorksheetNotFound:
+    bookings_ws = sheet.add_worksheet(title="Заявки", rows="1000", cols="5")
+
+FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")  # папка для фото
+if not FOLDER_ID:
+    raise RuntimeError("Missing DRIVE_FOLDER_ID environment variable")
 
 def upload_file_to_drive(file_storage):
     meta = {"name": file_storage.filename, "parents": [FOLDER_ID]}
@@ -41,7 +50,7 @@ def upload_file_to_drive(file_storage):
     ).execute()
     return f"https://drive.google.com/uc?id={file['id']}"
 
-# — Эндпоинт онбординга: регистрация пользователя —
+# Эндпоинт: регистрация пользователя (онбординг)
 @app.route("/register-user", methods=["POST"])
 def register_user():
     data = request.get_json(silent=True) or {}
@@ -52,7 +61,7 @@ def register_user():
     users_ws.append_row([datetime.now().isoformat(), name, city])
     return jsonify({"status": "ok"}), 200
 
-# — Эндпоинт регистрации эксперта (multipart/form-data) —
+# Эндпоинт: регистрация эксперта (multipart/form-data)
 @app.route("/register-expert", methods=["POST"])
 def register_expert():
     fio         = request.form.get("fio")
@@ -81,13 +90,13 @@ def register_expert():
     ])
     return jsonify({"status": "ok", "photo_url": photo_url}), 200
 
-# — Эндпоинт для списка экспертов (GET) —
+# Эндпоинт: список экспертов
 @app.route("/consultation-experts", methods=["GET"])
 def get_experts():
     rows = experts_ws.get_all_records()
     return jsonify(rows), 200
 
-# — Эндпоинт записи на консультацию (JSON) —
+# Эндпоинт: запись на консультацию (JSON)
 @app.route("/book-expert", methods=["POST"])
 def book_expert():
     data = request.get_json(silent=True) or {}
