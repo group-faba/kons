@@ -28,7 +28,7 @@ gc = gspread.authorize(creds)
 sheet = gc.open_by_key(os.environ["SHEET_ID"])       # или gc.open("Консультации")
 experts_ws = sheet.worksheet("Эксперты")
 
-FOLDER_ID = os.environ.get("1Kw2gyUFNKpmWisk9QxA0_I7aJaoGVDth")  # ID папки в Google Drive
+FOLDER_ID = os.environ.get("FOLDER_ID")  # ID папки в Google Drive
 if not FOLDER_ID:
     raise RuntimeError("Missing DRIVE_FOLDER_ID environment variable")
 
