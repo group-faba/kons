@@ -9,11 +9,10 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# — Получаем учётные данные из переменной окружения —
+# — Загружаем сервисный ключ из ENV —
 creds_json = os.environ.get("GSPREAD_CREDENTIALS_JSON")
 if not creds_json:
     raise RuntimeError("Missing GSPREAD_CREDENTIALS_JSON environment variable")
-
 creds_dict = json.loads(creds_json)
 
 SCOPES = [
@@ -22,15 +21,16 @@ SCOPES = [
 ]
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 
-# — Настраиваем доступ к Drive и Sheets —
+# — Настраиваем Google Drive и Sheets —
 drive_service = build("drive", "v3", credentials=creds)
 gc = gspread.authorize(creds)
-sheet = gc.open_by_key(os.environ["SHEET_ID"])       # или gc.open("Консультации")
+sheet = gc.open_by_key(os.environ["SHEET_ID"])
 experts_ws = sheet.worksheet("Эксперты")
+users_ws   = sheet.worksheet("Users")    # Новый лист для онбординга
+bookings_ws = sheet.worksheet("Заявки")
 
-FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")  # ID папки в Google Drive
-if not FOLDER_ID:
-    raise RuntimeError("Missing DRIVE_FOLDER_ID environment variable")
+FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")  # Папка для фото
+# Если хотите пропускать фото-загрузку без папки, замените на .get() и уберите RuntimeError
 
 def upload_file_to_drive(file_storage):
     meta = {"name": file_storage.filename, "parents": [FOLDER_ID]}
@@ -41,22 +41,39 @@ def upload_file_to_drive(file_storage):
     ).execute()
     return f"https://drive.google.com/uc?id={file['id']}"
 
-# — Эндпоинт: регистрация эксперта —
+# — Эндпоинт онбординга: регистрация пользователя —
+@app.route("/register-user", methods=["POST"])
+def register_user():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    city = data.get("city")
+    if not name or not city:
+        abort(400, "Missing required field")
+    users_ws.append_row([datetime.now().isoformat(), name, city])
+    return jsonify({"status": "ok"}), 200
+
+# — Эндпоинт регистрации эксперта (multipart/form-data) —
 @app.route("/register-expert", methods=["POST"])
 def register_expert():
     fio         = request.form.get("fio")
     city        = request.form.get("city")
     sphere      = request.form.get("sphere")
     description = request.form.get("description")
-
     if not all([fio, city, sphere, description]):
         abort(400, "Missing required field")
 
     photo_url = ""
-    if 'photo' in request.files and FOLDER_ID:
-    photo_url = upload_file_to_drive(request.files['photo'])
-else:
-    photo_url = ''
+    if "photo" in request.files:
+        photo_file = request.files["photo"]
+        file_metadata = {"name": photo_file.filename, "parents": [FOLDER_ID]}
+        media = MediaIoBaseUpload(photo_file.stream, mimetype=photo_file.mimetype)
+        file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields="id"
+        ).execute()
+        drive_service.permissions().create(
+            fileId=file["id"], body={"type": "anyone", "role": "reader"}
+        ).execute()
+        photo_url = f"https://drive.google.com/uc?id={file['id']}"
 
     experts_ws.append_row([
         datetime.now().isoformat(),
@@ -64,28 +81,26 @@ else:
     ])
     return jsonify({"status": "ok", "photo_url": photo_url}), 200
 
-# — Эндпоинт: список экспертов для консультаций —
+# — Эндпоинт для списка экспертов (GET) —
 @app.route("/consultation-experts", methods=["GET"])
 def get_experts():
-    records = experts_ws.get_all_records()
-    return jsonify(records), 200
+    rows = experts_ws.get_all_records()
+    return jsonify(rows), 200
 
-# — Эндпоинт: запись на консультацию —
+# — Эндпоинт записи на консультацию (JSON) —
 @app.route("/book-expert", methods=["POST"])
 def book_expert():
     data = request.get_json(silent=True) or {}
     fio         = data.get("fio")
     expert_name = data.get("expert_name")
-    date        = data.get("date")
-    time        = data.get("time")
-
-    if not all([fio, expert_name, date, time]):
+    date_str    = data.get("date")
+    time_str    = data.get("time")
+    if not all([fio, expert_name, date_str, time_str]):
         abort(400, "Missing required field")
 
-    bookings_ws = sheet.worksheet("Заявки")
     bookings_ws.append_row([
         datetime.now().isoformat(),
-        fio, expert_name, date, time
+        fio, expert_name, date_str, time_str
     ])
     return jsonify({"status": "ok"}), 200
 
