@@ -25,7 +25,7 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 # — Настраиваем доступ к Drive и Sheets —
 drive_service = build("drive", "v3", credentials=creds)
 gc = gspread.authorize(creds)
-sheet = gc.open_by_key(os.environ["1Qwc_HcmMiBllhxpr8I76VohX44MLhe-9LyPyeT5G97U"])       # или gc.open("Консультации")
+sheet = gc.open_by_key(os.environ["SHEET_ID"])       # или gc.open("Консультации")
 experts_ws = sheet.worksheet("Эксперты")
 
 FOLDER_ID = os.environ.get("1Kw2gyUFNKpmWisk9QxA0_I7aJaoGVDth")  # ID папки в Google Drive
