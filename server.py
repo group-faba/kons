@@ -8,39 +8,25 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# — настройки Google Sheets и Drive —
-SCOPES = ['https://www.googleapis.com/auth/drive',
-          'https://www.googleapis.com/auth/spreadsheets']
+# — Настройки доступа к Google API —
+SCOPES = [
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/spreadsheets'
+]
 SERVICE_ACCOUNT_FILE = 'credentials.json'
-FOLDER_ID = '<ТВОЙ_FOLDER_ID>'
+FOLDER_ID = '<ТВОЙ_GOOGLE_DRIVE_FOLDER_ID>'
 
 creds = Credentials.from_service_account_file(
     SERVICE_ACCOUNT_FILE, scopes=SCOPES
 )
 drive_service = build('drive', 'v3', credentials=creds)
 gc = gspread.authorize(creds)
-sheet = gc.open("Консультации")         # название таблицы
-experts_ws = sheet.worksheet("Эксперты") # лист «Эксперты»
+sheet = gc.open("Консультации")          # название таблицы
+experts_ws = sheet.worksheet("Эксперты")  # лист с экспертами
 
-def upload_file_to_drive(file_storage):
-    # загружаем в папку на Google Drive
-    file_metadata = {'name': file_storage.filename, 'parents': [FOLDER_ID]}
-    media = MediaIoBaseUpload(file_storage.stream,
-                              mimetype=file_storage.mimetype)
-    file = drive_service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields='id'
-    ).execute()
-    drive_service.permissions().create(
-        fileId=file['id'],
-        body={'type': 'anyone', 'role': 'reader'}
-    ).execute()
-    return f"https://drive.google.com/uc?id={file['id']}"
-
+# — Эндпоинт: регистрация эксперта (multipart/form-data) —
 @app.route('/register-expert', methods=['POST'])
 def register_expert():
-    # 1) Получаем текстовые поля из формы
     fio         = request.form.get('fio')
     city        = request.form.get('city')
     sphere      = request.form.get('sphere')
@@ -49,13 +35,22 @@ def register_expert():
     if not all([fio, city, sphere, description]):
         abort(400, "Missing required field")
 
-    # 2) Если есть файл — заливаем и получаем URL
     photo_url = ''
     if 'photo' in request.files:
         photo_file = request.files['photo']
-        photo_url = upload_file_to_drive(photo_file)
+        # загружаем картинку на Drive и делаем её публичной
+        file_metadata = {'name': photo_file.filename, 'parents': [FOLDER_ID]}
+        media = MediaIoBaseUpload(photo_file.stream, mimetype=photo_file.mimetype)
+        file = drive_service.files().create(
+            body=file_metadata, media_body=media, fields='id'
+        ).execute()
+        drive_service.permissions().create(
+            fileId=file['id'],
+            body={'type': 'anyone', 'role': 'reader'}
+        ).execute()
+        photo_url = f"https://drive.google.com/uc?id={file['id']}"
 
-    # 3) Записываем новую строку в Google Sheets
+    # записываем в Google Sheets
     experts_ws.append_row([
         datetime.now().isoformat(),
         fio, city, sphere, description, photo_url
@@ -63,5 +58,13 @@ def register_expert():
 
     return jsonify({'status': 'ok', 'photo_url': photo_url}), 200
 
+# — Новый эндпоинт: возвращает список экспертов из таблицы —
+@app.route('/consultation-experts', methods=['GET'])
+def get_experts():
+    # получаем все строки в виде списка словарей
+    rows = experts_ws.get_all_records()  
+    return jsonify(rows), 200
+
 if __name__ == '__main__':
+    # запускаем на 0.0.0.0:8080 (или порт из env)
     app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
