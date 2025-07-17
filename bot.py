@@ -67,10 +67,12 @@ def add_slots_for_specialist(telegram_id, date, times):
     return True
 
 # --- Flask healthcheck (чтобы Render не засыпал)
-app = Flask(__name__)
-@app.route('/')
-def health():
-    return 'OK', 200
+@app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    application.process_update(update)
+    return "", 200
 
 # --- Conversation для /register (анкета)
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
@@ -422,6 +424,18 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=run_flask, daemon=True).start()
-    application.run_polling()
+    # 1. Запустить Flask
+    from threading import Thread
+    Thread(target=lambda: app.run(host="0.0.0.0", port=PORT), daemon=True).start()
+
+    # 2. Установить Webhook у Telegram
+    WEBHOOK_URL = os.environ["WEBHOOK_URL"]  # например "https://yourapp.onrender.com/webhook"
+    application.bot.set_webhook(WEBHOOK_URL)
+
+    # 3. Запустить приложение в режиме работы с webhook
+    application.run_webhook(
+        webhook_path="/webhook",
+        host="0.0.0.0",
+        port=PORT,
+        secret_token=os.environ.get("WEBHOOK_SECRET_TOKEN")
+    )
