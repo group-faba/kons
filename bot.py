@@ -68,7 +68,8 @@ def add_slots_for_specialist(telegram_id, date, times):
 
 # --- Flask healthcheck (чтобы Render не засыпал)
 app = Flask(__name__)
-@app.route('/')
+
+@app.route('/', methods=['GET', 'HEAD'])
 def health():
     return 'OK', 200
 
