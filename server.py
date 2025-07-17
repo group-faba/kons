@@ -8,7 +8,12 @@ import gspread
 from gspread.exceptions import WorksheetNotFound
 from datetime import datetime
 
+# --- Flask healthcheck (чтобы Render не засыпал)
 app = Flask(__name__)
+
+@app.route('/', methods=['GET', 'HEAD'])
+def health():
+    return 'OK', 200
 
 # 1) Сервисный ключ из ENV
 creds_json = os.environ.get("GSPREAD_CREDENTIALS_JSON")
