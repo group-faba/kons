@@ -424,18 +424,8 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    # 1. Запустить Flask
+    # Запускаем Flask (чтобы шарить health-check на /)
     from threading import Thread
     Thread(target=lambda: app.run(host="0.0.0.0", port=PORT), daemon=True).start()
-
-    # 2. Установить Webhook у Telegram
-    WEBHOOK_URL = os.environ["WEBHOOK_URL"]  # например "https://yourapp.onrender.com/webhook"
-    application.bot.set_webhook(WEBHOOK_URL)
-
-    # 3. Запустить приложение в режиме работы с webhook
-    application.run_webhook(
-        webhook_path="/webhook",
-        host="0.0.0.0",
-        port=PORT,
-        secret_token=os.environ.get("WEBHOOK_SECRET_TOKEN")
-    )
+    # И запускаем обычный polling
+    application.run_polling()
