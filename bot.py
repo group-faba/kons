@@ -68,8 +68,7 @@ def add_slots_for_specialist(telegram_id, date, times):
 
 # --- Flask healthcheck (чтобы Render не засыпал)
 app = Flask(__name__)
-
-@app.route('/', methods=['GET', 'HEAD'])
+@app.route('/')
 def health():
     return 'OK', 200
 
@@ -125,76 +124,105 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # --- Новый Хендлер /time ---
-TIME_DATE, TIME_SELECT = range(2)
+# --- Глобально для выбора времени у специалиста ---
+SELECT_TIME, = range(1)
 
-async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    dates = [(datetime.now() + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
-    kb = [[InlineKeyboardButton(d, callback_data=f'timedate_{d}')] for d in dates]
-    await update.message.reply_text("Выберите дату для записи:", reply_markup=InlineKeyboardMarkup(kb))
-    ctx.user_data['slot_times'] = []
-    return TIME_DATE
-
-async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    date = q.data.split('_')[1]
-    ctx.user_data['slot_date'] = date
-    times = [f"{h:02d}:00" for h in range(8, 21)]  # 8:00–20:00 МСК
-    # Показываем галочки для выбранных
+    selected_date = q.data.split('_', 1)[-1]
+    ctx.user_data['selected_date'] = selected_date
+    ctx.user_data['selected_times'] = []  # сбрасываем выбранные времена
+
+    spec = ctx.user_data['selected_specialist']
+    # Слоты только на выбранную дату
+    slots = [slot for slot in spec['slots'] if slot.startswith(selected_date)]
+    times = [slot.split()[1] for slot in slots]
+
+    if not times:
+        await q.message.reply_text('Нет свободного времени для этой даты.', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Назад", callback_data="specback")]]))
+        return SELECT_TIME
+
     kb = []
-    selected = set(ctx.user_data.get('slot_times', []))
+    selected = set(ctx.user_data.get('selected_times', []))
     for t in times:
         text = f"{'✅ ' if t in selected else ''}{t}"
-        kb.append([InlineKeyboardButton(text, callback_data=f'timeselect_{t}')])
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data='timeconfirm')])
-    kb.append([InlineKeyboardButton("Назад", callback_data='timeback')])
-    await q.message.edit_text(
-        f"Дата: {date}\nВыберите время (можно несколько):",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return TIME_SELECT
+        kb.append([InlineKeyboardButton(text, callback_data=f"time_{t}")])
+    kb.append([InlineKeyboardButton("Подтвердить", callback_data="timeconfirm")])
+    kb.append([InlineKeyboardButton("Назад", callback_data="dated_back")])
+    await q.message.reply_text("Выберите время для записи:", reply_markup=InlineKeyboardMarkup(kb))
+    return SELECT_TIME
 
-async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    if q.data.startswith('timeselect_'):
-        time = q.data.split('_')[1]
-        slot_times = ctx.user_data.get('slot_times', [])
-        if time in slot_times:
-            slot_times.remove(time)
+    data = q.data
+
+    if data.startswith('time_'):
+        t = data.split('_', 1)[-1]
+        selected_times = ctx.user_data.get('selected_times', [])
+        if t in selected_times:
+            selected_times.remove(t)
         else:
-            slot_times.append(time)
-        ctx.user_data['slot_times'] = slot_times
-        # Перерисовать кнопки с галочками
-        times = [f"{h:02d}:00" for h in range(8, 21)]
+            selected_times.append(t)
+        ctx.user_data['selected_times'] = selected_times
+
+        # Перерисовать с галочками
+        spec = ctx.user_data['selected_specialist']
+        selected_date = ctx.user_data['selected_date']
+        slots = [slot for slot in spec['slots'] if slot.startswith(selected_date)]
+        times = [slot.split()[1] for slot in slots]
         kb = []
-        selected = set(slot_times)
-        for t in times:
-            text = f"{'✅ ' if t in selected else ''}{t}"
-            kb.append([InlineKeyboardButton(text, callback_data=f'timeselect_{t}')])
-        kb.append([InlineKeyboardButton("Подтвердить", callback_data='timeconfirm')])
-        kb.append([InlineKeyboardButton("Назад", callback_data='timeback')])
-        await q.message.edit_text(
-            f"Дата: {ctx.user_data['slot_date']}\nВыберите время (можно несколько):",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return TIME_SELECT
-    elif q.data == 'timeconfirm':
-        date = ctx.user_data['slot_date']
-        times = ctx.user_data.get('slot_times', [])
+        selected = set(selected_times)
+        for time in times:
+            text = f"{'✅ ' if time in selected else ''}{time}"
+            kb.append([InlineKeyboardButton(text, callback_data=f"time_{time}")])
+        kb.append([InlineKeyboardButton("Подтвердить", callback_data="timeconfirm")])
+        kb.append([InlineKeyboardButton("Назад", callback_data="dated_back")])
+        await q.message.edit_text("Выберите время для записи:", reply_markup=InlineKeyboardMarkup(kb))
+        return SELECT_TIME
+
+    elif data == 'timeconfirm':
+        times = ctx.user_data.get('selected_times', [])
         if not times:
             await q.message.reply_text("Не выбрано время.")
-            return TIME_SELECT
-        success = add_slots_for_specialist(q.from_user.id, date, times)
-        if not success:
-            await q.message.reply_text("Ваша анкета не найдена.")
-        else:
-            await q.message.reply_text(f"Время добавлено: {date} — {', '.join(times)}")
-            await q.message.reply_text("Выставить слоты на другой день / изменить? (/time)")
+            return SELECT_TIME
+        date = ctx.user_data['selected_date']
+        spec = ctx.user_data['selected_specialist']
+        fio = spec['ФИО']
+        ws, row_num, _ = get_specialist_row(spec['Telegram ID'])
+        if not row_num:
+            await q.message.reply_text("Ошибка: не найдена анкета специалиста.")
+            return ConversationHandler.END
+        slots_str = ws.cell(row_num, 8).value or ''
+        slots = [s.strip() for s in slots_str.split(';') if s.strip()]
+        slot_results = []
+        for slot_time in times:
+            slot = f"{date} {slot_time}"
+            if slot in slots:
+                slots.remove(slot)
+                slot_results.append(slot_time)
+        ws.update_cell(row_num, 8, ';'.join(slots))
+        await q.message.reply_text(f"Вы записались к специалисту: {fio} на {date} {', '.join(slot_results)}")
+        try:
+            await ctx.bot.send_message(
+                spec['Telegram ID'],
+                f"У вас новая запись: {update.effective_user.full_name} (@{update.effective_user.username}) на {date} {', '.join(slot_results)}"
+            )
+        except Exception:
+            pass
         return ConversationHandler.END
-    elif q.data == 'timeback':
-        return await time_start(update, ctx)
-    return TIME_SELECT
+
+    elif data == 'dated_back':
+        # Вернуться к выбору даты (открыть cb_spec снова)
+        spec = ctx.user_data['selected_specialist']
+        dates = sorted(set(s.split()[0] for s in spec['slots']))
+        kb = [[InlineKeyboardButton(d, callback_data=f'date_{d}')] for d in dates]
+        kb.append([InlineKeyboardButton("Назад", callback_data='fieldback')])
+        await q.message.edit_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
+        return CHOOSING_DATE
+
+    return SELECT_TIME
 
 # --- Логика выбора специалиста
 CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME = range(5)
@@ -378,9 +406,8 @@ conv_main = ConversationHandler(
             CallbackQueryHandler(cb_date, pattern=r'^date_'),
             CallbackQueryHandler(cb_fieldback, pattern='^fieldback')
         ],
-        CHOOSING_TIME: [
-            CallbackQueryHandler(cb_time, pattern=r'^time_'),
-            CallbackQueryHandler(cb_specback, pattern='^specback')
+        SELECT_TIME: [
+            CallbackQueryHandler(cb_time, pattern=r'^time_|^timeconfirm$|^dated_back$')
         ]
     },
     fallbacks=[],
