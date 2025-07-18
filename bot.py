@@ -2,312 +2,254 @@ import os
 import json
 import logging
 import gspread
-from google.oauth2.service_account import Credentials
-from flask import Flask
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
+from oauth2client.service_account import ServiceAccountCredentials
+from flask import Flask, request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# ——— Настройка логирования ———
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# ——— Параметры из ENV ———
-TOKEN        = os.environ['TELEGRAM_TOKEN']
-SHEET_ID     = os.environ['SHEET_ID']
-CREDS_JSON   = os.environ['GSPREAD_CREDENTIALS_JSON']
-PORT         = int(os.environ.get('PORT', '8080'))
+# Переменные окружения
+TOKEN      = os.environ['TELEGRAM_TOKEN']
+SHEET_ID   = os.environ['SHEET_ID']
+CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
+PORT       = int(os.environ.get('PORT', '8443'))
 
-# ——— GSpread авторизация ———
-creds_dict = json.loads(CREDS_JSON)
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive']
-creds   = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-gc      = gspread.authorize(creds)
-sheet   = gc.open_by_key(SHEET_ID)
+# Подключение к Google Sheets
+SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
+gc = gspread.authorize(creds)
+sheet = gc.open_by_key(SHEET_ID)
+ws      = sheet.worksheet('Лист1')            # Таблица экспертов
+book_ws = sheet.add_worksheet(title="Заявки", rows="1000", cols="5") \
+               if 'Заявки' not in [s.title for s in sheet.worksheets()] \
+               else sheet.worksheet('Заявки')
 
-# ——— Листы Google Sheets ———
-experts_ws  = sheet.worksheet("Эксперты")
-users_ws    = sheet.worksheet("Users")
-try:
-    bookings_ws = sheet.worksheet("Заявки")
-except gspread.exceptions.WorksheetNotFound:
-    bookings_ws = sheet.add_worksheet(title="Заявки", rows="1000", cols="5")
-
-# ——— Flask healthcheck ———
+# Flask для healthcheck и вебхука
 app = Flask(__name__)
+
 @app.route('/', methods=['GET', 'HEAD'])
 def health():
-    return "OK", 200
+    return 'OK', 200
 
-# ——— HELPERS ———
-def get_specialists():
-    rows = experts_ws.get_all_records()
-    specs = []
-    for idx, row in enumerate(rows, start=2):
-        spec = dict(row)
-        spec['row_num'] = idx
-        slots_str = experts_ws.cell(idx, 8).value or ""
-        spec['slots']   = [s.strip() for s in slots_str.split(';') if s.strip()]
-        specs.append(spec)
-    return specs
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    application.process_update(update)
+    return '', 200
 
-def get_specialist_row(tg_id):
-    records = experts_ws.get_all_records()
-    for i, row in enumerate(records, start=2):
-        if str(row.get("Telegram ID","")) == str(tg_id):
-            return experts_ws, i, row
-    return None, None, None
-
-# ——— Константы состояний ———
+# ConversationHandler states
 (
-    REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO,
-    TIME_DATE, TIME_SELECT,
-    CH_REGION, CH_FIELD, CH_SPEC, CH_DATE, CH_TIME
-) = range(12)
+    C_START,
+    C_REGION, C_FIELD, C_SPEC,
+    C_DATE, C_TIME, C_CONFIRM
+) = range(7)
 
-# ——— ОБРАБОТЧИК /start ———
-async def start_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Консультации", callback_data="consult")],
-        [InlineKeyboardButton("✏️ Регистрация эксперта", callback_data="register")],
-    ])
-    if update.message:
-        await update.message.reply_text("Выберите действие:", reply_markup=kb)
-    else:
-        await update.callback_query.message.edit_text("Выберите действие:", reply_markup=kb)
-    return ConversationHandler.END  # просто выводим меню
+# --- /start ---
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    kb = [
+        [InlineKeyboardButton("📋 Консультации", callback_data="do_consult")],
+        [InlineKeyboardButton("✏️ Регистрация эксперта", callback_data="do_register")]
+    ]
+    await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
+    return C_START
 
-# ——— CALLBACK: “Консультации” — запускаем выбор ———
-async def cb_consult(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+# --- Регистрация нового эксперта ---
+async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    return await cmd_start(update, ctx)
-
-# ——— CALLBACK: “Регистрация эксперта” — форму ———
-async def cb_register_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    # вручную запускаем первый шаг регистрации
     await update.callback_query.message.reply_text("Введите ваше ФИО:")
-    return REG_NAME
+    return C_REGION
 
-# ——— Регистрация эксперта — ConversationHandler ———
 async def reg_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data['fio'] = update.message.text
-    await update.message.reply_text("Введите город:")
-    return REG_CITY
+    ctx.user_data['reg_fio'] = update.message.text
+    await update.message.reply_text("Введите город эксперта:")
+    return C_FIELD
 
 async def reg_city(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data['city'] = update.message.text
-    await update.message.reply_text("Введите сферу деятельности:")
-    return REG_FIELD
+    ctx.user_data['reg_city'] = update.message.text
+    await update.message.reply_text("Введите сферу экспертизы:")
+    return C_SPEC
 
 async def reg_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data['sphere'] = update.message.text
-    await update.message.reply_text("Напишите короткое описание:")
-    return REG_DESC
+    ctx.user_data['reg_sphere'] = update.message.text
+    await update.message.reply_text("Кратко опишите себя:")
+    return C_DATE
 
 async def reg_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data['desc'] = update.message.text
-    await update.message.reply_text("Прикрепите фото (сертификат и т.п.):")
-    return REG_PHOTO
+    ctx.user_data['reg_desc'] = update.message.text
+    await update.message.reply_text("Пришлите ваше фото (сертификат или портрет):")
+    return C_TIME
 
 async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    photo_id = update.message.photo[-1].file_id if update.message.photo else ""
-    # сохраняем в Google Sheets
-    experts_ws.append_row([
-        ctx.user_data['fio'],
-        ctx.user_data['city'],
-        ctx.user_data['sphere'],
-        ctx.user_data['desc'],
-        photo_id,
+    file_id = update.message.photo[-1].file_id if update.message.photo else ''
+    ws.append_row([
+        datetime.now().isoformat(),
+        ctx.user_data['reg_fio'],
+        ctx.user_data['reg_city'],
+        ctx.user_data['reg_sphere'],
+        ctx.user_data['reg_desc'],
+        file_id,
         update.effective_user.id,
-        update.effective_user.username or "",
-        ""  # slots
+        update.effective_user.username or '',
+        ""  # Slots
     ])
     await update.message.reply_text("✅ Вы зарегистрированы как эксперт!")
     return ConversationHandler.END
 
-async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Регистрация отменена.")
-    return ConversationHandler.END
+# --- Запись на консультацию ---
+async def consult_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    records = ws.get_all_records()
+    regions = sorted({r['город эксперта'] for r in records})
+    kb = [[InlineKeyboardButton(r, callback_data=f"region|{r}")] for r in regions]
+    kb += [[InlineKeyboardButton("Назад", callback_data="back_to_menu")]]
+    await update.callback_query.message.reply_text("Выберите город:", reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['records'] = records
+    return C_REGION
 
-conv_reg = ConversationHandler(
-    entry_points=[CallbackQueryHandler(cb_register_button, pattern="^register$")],
-    states={
-        REG_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
-        REG_CITY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)],
-        REG_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)],
-        REG_DESC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
-        REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)],
-    },
-    fallbacks=[CommandHandler("cancel", reg_cancel)],
-)
-
-# ——— Добавление таймов эксперта (/time) — ConversationHandler ———
-async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    days = [(datetime.now()+timedelta(i)).strftime("%Y-%m-%d") for i in range(7)]
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(d, callback_data=f"td_{d}")] for d in days])
-    await update.message.reply_text("Выберите дату:", reply_markup=kb)
-    ctx.user_data['slot_times'] = []
-    return TIME_DATE
-
-async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    date = q.data.split("_",1)[1]
-    ctx.user_data['slot_date'] = date
-    hours = [f"{h:02d}:00" for h in range(8,21)]
-    kb = []
-    sel = set(ctx.user_data['slot_times'])
-    for h in hours:
-        prefix = "✅ " if h in sel else ""
-        kb.append([InlineKeyboardButton(prefix+h, callback_data=f"tt_{h}")])
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="tt_done")])
-    await q.message.edit_text(f"Дата: {date}\nВыберите время:", reply_markup=InlineKeyboardMarkup(kb))
-    return TIME_SELECT
-
-async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    data = q.data
-    if data.startswith("tt_") and data!="tt_done":
-        t = data.split("_",1)[1]
-        lst = ctx.user_data['slot_times']
-        lst = [x for x in lst if x!=t] if t in lst else lst+[t]
-        ctx.user_data['slot_times'] = lst
-        return await time_date(update, ctx)
-    if data=="tt_done":
-        date = ctx.user_data['slot_date']
-        times = ctx.user_data['slot_times']
-        ok = add_slots_for_specialist(q.from_user.id, date, times)
-        text = "Успешно добавлено!" if ok else "Ошибка: сначала /register"
-        await q.message.reply_text(text)
-        return ConversationHandler.END
-    return TIME_SELECT
-
-conv_time = ConversationHandler(
-    entry_points=[CommandHandler("time", time_start)],
-    states={
-        TIME_DATE:   [CallbackQueryHandler(time_date, pattern="^td_")],
-        TIME_SELECT: [CallbackQueryHandler(time_select, pattern="^tt_")],
-    },
-    fallbacks=[]
-)
-
-# ——— Запись на консультацию — ConversationHandler ———
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # первый шаг: регион
-    specs   = get_specialists()
-    ctx.user_data['specs'] = specs
-    regions = sorted({s['город эксперта'] for s in specs})
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(r, callback_data=f"rg_{r}")] for r in regions])
-    if update.message:
-        await update.message.reply_text("Выберите регион:", reply_markup=kb)
-    else:
-        await update.callback_query.message.reply_text("Выберите регион:", reply_markup=kb)
-    return CH_REGION
-
-async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q      = update.callback_query; await q.answer()
-    region = q.data.split("_",1)[1]
+async def consult_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    _, region = update.callback_query.data.split("|",1)
     ctx.user_data['region'] = region
-    # поля
-    specs  = [s for s in ctx.user_data['specs'] if s['город эксперта']==region]
-    fields = sorted({s['сфера'] for s in specs})
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f, callback_data=f"fl_{f}")] for f in fields] +
-                             [[InlineKeyboardButton("← Назад", callback_data="back_start")]])
-    await q.message.reply_text(f"Регион: {region}\nВыберите сферу:", reply_markup=kb)
-    return CH_FIELD
+    recs = [r for r in ctx.user_data['records'] if r['город эксперта']==region]
+    spheres = sorted({r['сфера'] for r in recs})
+    kb = [[InlineKeyboardButton(s, callback_data=f"field|{s}")] for s in spheres]
+    kb += [[InlineKeyboardButton("Назад", callback_data="do_consult")]]
+    await update.callback_query.message.reply_text(f"Город: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb))
+    return C_FIELD
 
-async def cb_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q      = update.callback_query; await q.answer()
-    field  = q.data.split("_",1)[1]
-    region = ctx.user_data['region']
-    specs  = [s for s in ctx.user_data['specs'] if s['город эксперта']==region and s['сфера']==field]
-    ctx.user_data['field'] = field
-    ctx.user_data['candidates'] = {str(s['Telegram ID']):s for s in specs}
-    kb = InlineKeyboardMarkup(
-         [[InlineKeyboardButton(s['ФИО эксперта'], callback_data=f"sp_{tid}")]
-          for tid in ctx.user_data['candidates']] +
-         [[InlineKeyboardButton("← Назад", callback_data="rg_"+region)]]
-    )
-    await q.message.reply_text(f"Сфера: {field}\nВыберите эксперта:", reply_markup=kb)
-    return CH_SPEC
+async def consult_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    _, sphere = update.callback_query.data.split("|",1)
+    ctx.user_data['sphere'] = sphere
+    recs = [r for r in ctx.user_data['records']
+            if r['город эксперта']==ctx.user_data['region']
+           and r['сфера']==sphere]
+    kb = [[InlineKeyboardButton(r['ФИО эксперта'], callback_data=f"spec|{r['Telegram ID']}")] for r in recs]
+    kb += [[InlineKeyboardButton("Назад", callback_data="region|"+ctx.user_data['region'])]]
+    await update.callback_query.message.reply_text(f"Сфера: {sphere}\nВыберите эксперта:", reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['filtered'] = {str(r['Telegram ID']): r for r in recs}
+    return C_SPEC
 
-async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q    = update.callback_query; await q.answer()
-    tid  = q.data.split("_",1)[1]
-    spec = ctx.user_data['candidates'][tid]
-    ctx.user_data['chosen_spec'] = spec
-    # выводим описание + фото_id
+async def consult_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    _, tid = update.callback_query.data.split("|",1)
+    spec = ctx.user_data['filtered'][tid]
+    ctx.user_data['spec'] = spec
     text = f"{spec['ФИО эксперта']}\n{spec['описание']}"
     if spec.get('photo_file_id'):
-        await q.message.reply_photo(photo=spec['photo_file_id'], caption=text)
+        await update.callback_query.message.reply_photo(photo=spec['photo_file_id'], caption=text)
     else:
-        await q.message.reply_text(text)
-    # даты
-    dates = sorted({slot.split()[0] for slot in spec['slots']})
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(d, callback_data=f"dt_{d}")] for d in dates] +
-                             [[InlineKeyboardButton("← Назад", callback_data="fl_"+ctx.user_data['field'])]])
-    await q.message.reply_text("Выберите дату:", reply_markup=kb)
-    return CH_DATE
+        await update.callback_query.message.reply_text(text)
+    # даты из Slots
+    slots = (spec.get('Slots') or "").split(";")
+    dates = sorted({s.split()[0] for s in slots if s})
+    kb = [[InlineKeyboardButton(d, callback_data=f"date|{d}")] for d in dates]
+    kb += [[InlineKeyboardButton("Назад", callback_data=f"field|{ctx.user_data['sphere']}")]]
+    await update.callback_query.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
+    return C_DATE
 
-async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q      = update.callback_query; await q.answer()
-    date   = q.data.split("_",1)[1]
-    spec   = ctx.user_data['chosen_spec']
-    slots  = [s for s in spec['slots'] if s.startswith(date)]
-    times  = [s.split()[1] for s in slots]
-    ctx.user_data['book_date'] = date
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(t, callback_data=f"tm_{t}")] for t in times] +
-                             [[InlineKeyboardButton("← Назад", callback_data="sp_"+str(spec['Telegram ID']))]])
-    await q.message.reply_text("Выберите время:", reply_markup=kb)
-    return CH_TIME
+async def consult_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    _, date = update.callback_query.data.split("|",1)
+    ctx.user_data['date'] = date
+    spec = ctx.user_data['spec']
+    slots = [s for s in spec['Slots'].split(";") if s.startswith(date)]
+    times = [s.split()[1] for s in slots]
+    kb = [[InlineKeyboardButton(t, callback_data=f"time|{t}")] for t in times]
+    # кнопка «Подтвердить»
+    kb += [[InlineKeyboardButton("Подтвердить", callback_data="confirm")]]
+    kb += [[InlineKeyboardButton("Назад", callback_data=f"spec|{spec['Telegram ID']}")]]
+    await update.callback_query.message.reply_text("Выберите время (можно несколько):",
+                                                 reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['sel_times'] = []
+    return C_TIME
 
-async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q      = update.callback_query; await q.answer()
-    t      = q.data.split("_",1)[1]
-    date   = ctx.user_data['book_date']
-    spec   = ctx.user_data['chosen_spec']
-    fio    = ctx.user_data.get('user_fio',"") or update.effective_user.full_name
-    # сохраняем в Гугл
-    bookings_ws.append_row([fio, spec['ФИО эксперта'], date, t])
-    await q.message.reply_text(f"✅ Вы записаны к {spec['ФИО эксперта']} на {date} {t}")
-    return ConversationHandler.END
+async def consult_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    data = update.callback_query.data
+    if data.startswith("time|"):
+        t = data.split("|",1)[1]
+        sel = ctx.user_data['sel_times']
+        if t in sel: sel.remove(t)
+        else:        sel.append(t)
+        ctx.user_data['sel_times'] = sel
+        # просто перерисуем кнопки галочками
+        buttons = []
+        for slot in ctx.user_data['sel_times']:
+            buttons.append(f"✅ {slot}")
+        await update.callback_query.message.edit_reply_markup(
+            InlineKeyboardMarkup(
+                [[InlineKeyboardButton(
+                    ("✅ " if slot in sel else "")+slot,
+                    callback_data=f"time|{slot}"
+                )] for slot in sorted(set(sel+sel))]  # просто фикс, чтобы не ломалось
+                +[[InlineKeyboardButton("Подтвердить", callback_data="confirm")]]
+            )
+        )
+        return C_TIME
 
-async def back_to_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    return await start_menu(update, ctx)
+    elif data == "confirm":
+        spec = ctx.user_data['spec']
+        fio  = update.effective_user.full_name
+        date = ctx.user_data['date']
+        times = ctx.user_data['sel_times']
+        # Запишем в Google Sheets
+        book_ws.append_row([datetime.now().isoformat(), fio,
+                            spec['ФИО эксперта'], date, ", ".join(times)])
+        await update.callback_query.message.reply_text(
+            f"✅ Запись: {spec['ФИО эксперта']} на {date} {', '.join(times)}"
+        )
+        return ConversationHandler.END
 
-conv_consult = ConversationHandler(
-    entry_points=[CallbackQueryHandler(cb_consult, pattern="^consult$")],
-    states={
-        CH_REGION: [CallbackQueryHandler(cb_region, pattern="^rg_")],
-        CH_FIELD:  [CallbackQueryHandler(cb_field, pattern="^fl_|^back_start$")],
-        CH_SPEC:   [CallbackQueryHandler(cb_spec, pattern="^sp_")],
-        CH_DATE:   [CallbackQueryHandler(cb_date, pattern="^dt_")],
-        CH_TIME:   [CallbackQueryHandler(cb_time, pattern="^tm_")],
-    },
-    fallbacks=[CallbackQueryHandler(back_to_start, pattern="^back_start$")]
-)
+# --- Сброс к меню ---
+async def go_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    return await cmd_start(update, ctx)
 
-# ——— Сборка приложения ———
+# --- Сборка приложения ---
 application = ApplicationBuilder().token(TOKEN).build()
 
-application.add_handler(CommandHandler("start", start_menu))
-application.add_handler(conv_reg)
-application.add_handler(conv_time)
-application.add_handler(conv_consult)
+reg_conv = ConversationHandler(
+    entry_points=[ CallbackQueryHandler(reg_start, pattern="^do_register$") ],
+    states={
+        C_REGION: [ MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name) ],
+        C_FIELD:  [ MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city) ],
+        C_SPEC:   [ MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field) ],
+        C_DATE:   [ MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc) ],
+        C_TIME:   [ MessageHandler(filters.PHOTO,               reg_photo) ],
+    },
+    fallbacks=[ CallbackQueryHandler(go_back, pattern="^back_to_menu$") ],
+    per_message=False
+)
 
-# ——— Запуск совместно с Flask (для Render) ———
+consult_conv = ConversationHandler(
+    entry_points=[ CallbackQueryHandler(consult_start,   pattern="^do_consult$") ],
+    states={
+        C_REGION:  [ CallbackQueryHandler(consult_region, pattern="^region\\|") ],
+        C_FIELD:   [ CallbackQueryHandler(consult_field,  pattern="^field\\|") ],
+        C_SPEC:    [ CallbackQueryHandler(consult_spec,   pattern="^spec\\|") ],
+        C_DATE:    [ CallbackQueryHandler(consult_date,   pattern="^date\\|") ],
+        C_TIME:    [
+            CallbackQueryHandler(consult_time, pattern="^time\\|"),
+            CallbackQueryHandler(consult_time, pattern="^confirm$")
+        ],
+    },
+    fallbacks=[ CallbackQueryHandler(go_back, pattern="^back_to_menu$") ],
+    per_message=False
+)
+
+application.add_handler(CommandHandler("start", cmd_start))
+application.add_handler(reg_conv)
+application.add_handler(consult_conv)
+
+# И вебхук + polling
 def run_flask():
     app.run(host="0.0.0.0", port=PORT)
 
