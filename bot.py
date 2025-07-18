@@ -245,10 +245,4 @@ conv = ConversationHandler(
 )
 
 if __name__ == "__main__":
-    # Запускаем Flask (health) и бота вместе
-    from threading import Thread
-
-    Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
-    application = ApplicationBuilder().token(TOKEN).build()
-    application.add_handler(conv)
     application.run_polling()
