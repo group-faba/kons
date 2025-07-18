@@ -2,133 +2,142 @@ import os
 import json
 import logging
 import gspread
-from google.oauth2.service_account import Credentials
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ConversationHandler, MessageHandler, ContextTypes, filters
+from flask import Flask
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
+)
+from datetime import datetime
 
+logging.basicConfig(level=logging.INFO)
 TOKEN      = os.environ['TELEGRAM_TOKEN']
 SHEET_ID   = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 
-# Google Sheets авторизация
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
-CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
-creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
-gc = gspread.authorize(creds)
-SHEET_ID = os.environ['SHEET_ID']
+# Google Sheets подключение
+SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+gc = gspread.service_account_from_dict(CREDS_JSON)
 sheet = gc.open_by_key(SHEET_ID)
-ws = sheet.worksheet('Эксперты')  # ИМЯ ЛИСТА ДОЛЖНО СОВПАДАТЬ
+ws = sheet.worksheet('Консультации')
 
-logging.basicConfig(level=logging.INFO)
+# Conversation states
+CHOOSE_ACTION, CHOOSE_SPECIALIST, CHOOSE_DATE = range(3)
 
-REG_FIO, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# /start
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("Нужна консультация", callback_data='need_consult')],
-        [InlineKeyboardButton("Зарегистрироваться как эксперт", callback_data='register')]
+        [InlineKeyboardButton("Зарегистрироваться как эксперт", callback_data='register_expert')],
     ]
     await update.message.reply_text(
         "Добро пожаловать! Что вы хотите сделать?",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    return CHOOSE_ACTION
 
-async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработка кнопки "Нужна консультация"
+async def cb_need_consult(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data == 'register':
-        await query.message.reply_text("Введите ваше ФИО:")
-        return REG_FIO
-    elif query.data == 'need_consult':
-        # Выводим список специалистов из таблицы
-        records = ws.get_all_records()
-        specs = [(r['ФИО эксперта'], r['описание'], r['photo_file_id']) for r in records if r.get('ФИО эксперта')]
-        keyboard = [
-            [InlineKeyboardButton(name, callback_data=f"spec_{i}")]
-            for i, (name, _, _) in enumerate(specs)
-        ]
-        await query.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(keyboard))
-        context.user_data['specs'] = specs
-        return "SHOW_SPEC"
-    else:
-        await query.message.reply_text("Неизвестная команда.")
 
-async def reg_fio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['fio'] = update.message.text
-    await update.message.reply_text("Введите город:")
-    return REG_CITY
+    # Получаем специалистов
+    records = ws.get_all_records()
+    # Запоминаем специалистов для дальнейшего использования
+    context.user_data['specialists'] = records
 
-async def reg_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['city'] = update.message.text
-    await update.message.reply_text("Введите сферу:")
-    return REG_FIELD
+    # Формируем клавиатуру по именам специалистов
+    kb = []
+    filtered_specs = {}
+    for spec in records:
+        name = spec['ФИО эксперта']
+        tid = spec['Telegram ID']
+        filtered_specs[str(tid)] = spec
+        kb.append([InlineKeyboardButton(name, callback_data=f'spec_{tid}')])
 
-async def reg_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['field'] = update.message.text
-    await update.message.reply_text("Опишите себя:")
-    return REG_DESC
+    context.user_data['filtered_specs'] = filtered_specs
 
-async def reg_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['desc'] = update.message.text
-    await update.message.reply_text("Пришлите фото (как изображение, не файл):")
-    return REG_PHOTO
+    await query.message.reply_text(
+        "Выберите специалиста:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return CHOOSE_SPECIALIST
 
-async def reg_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo = update.message.photo
-    if not photo:
-        await update.message.reply_text("Пришли фото (как изображение, не файл)!")
-        return REG_PHOTO
-    file_id = photo[-1].file_id
-    context.user_data['photo_file_id'] = file_id
-    ws.append_row([
-        context.user_data['fio'],
-        context.user_data['city'],
-        context.user_data['field'],
-        context.user_data['desc'],
-        file_id,
-        str(update.effective_user.id),
-        update.effective_user.username or "",
-        ""  # Slots
-    ])
-    await update.message.reply_text("✅ Вы зарегистрированы как эксперт!")
-    return ConversationHandler.END
-
-async def show_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработка выбора специалиста
+async def cb_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    idx = int(query.data.replace("spec_", ""))
-    spec = context.user_data['specs'][idx]
-    name, desc, file_id = spec
-    if file_id:
-        await query.message.reply_photo(photo=file_id, caption=f"{name}\n{desc}")
-    else:
-        await query.message.reply_text(f"{name}\n{desc}")
+    spec_id = query.data.split('_', 1)[1]
+    spec = context.user_data['filtered_specs'][spec_id]
+    context.user_data['selected_specialist'] = spec
 
+    text = f"{spec['ФИО эксперта']}\n{spec['описание']}\nВыберите дату:"
+    kb = [
+        [InlineKeyboardButton("⬅️ Назад", callback_data='back')]
+    ]
+
+    # Показываем фото, если оно есть
+    if spec.get('photo_file_id'):
+        await query.message.reply_photo(
+            photo=spec['photo_file_id'],
+            caption=text,
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+    else:
+        await query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+    return CHOOSE_DATE
+
+# Обработка кнопки "Назад"
+async def cb_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # Возврат к выбору специалиста
+    records = context.user_data.get('specialists', [])
+    kb = []
+    filtered_specs = {}
+    for spec in records:
+        name = spec['ФИО эксперта']
+        tid = spec['Telegram ID']
+        filtered_specs[str(tid)] = spec
+        kb.append([InlineKeyboardButton(name, callback_data=f'spec_{tid}')])
+    context.user_data['filtered_specs'] = filtered_specs
+    await query.message.reply_text(
+        "Выберите специалиста:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return CHOOSE_SPECIALIST
+
+# Обработка кнопки "Зарегистрироваться как эксперт" (заглушка)
+async def cb_register_expert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Регистрация эксперта — в разработке.")
     return ConversationHandler.END
 
-application = ApplicationBuilder().token(TOKEN).build()
-
+# ConversationHandler
 conv = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
+    entry_points=[CommandHandler("start", cmd_start)],
     states={
-        REG_FIO:   [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_fio)],
-        REG_CITY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)],
-        REG_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)],
-        REG_DESC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
-        REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)],
-        "SHOW_SPEC": [CallbackQueryHandler(show_spec, pattern=r"^spec_")]
+        CHOOSE_ACTION: [
+            CallbackQueryHandler(cb_need_consult, pattern='^need_consult$'),
+            CallbackQueryHandler(cb_register_expert, pattern='^register_expert$')
+        ],
+        CHOOSE_SPECIALIST: [
+            CallbackQueryHandler(cb_spec, pattern=r'^spec_')
+        ],
+        CHOOSE_DATE: [
+            CallbackQueryHandler(cb_back, pattern='^back$')
+        ]
     },
     fallbacks=[],
 )
 
-application.add_handler(conv)
-application.add_handler(CallbackQueryHandler(main_menu_handler, pattern='^(register|need_consult)$'))
-
 if __name__ == "__main__":
-    application.run_polling()
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(conv)
+    app.run_polling()
