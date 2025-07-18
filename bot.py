@@ -14,11 +14,16 @@ SHEET_ID   = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 
 # Google Sheets авторизация
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
 gc = gspread.authorize(creds)
+SHEET_ID = os.environ['SHEET_ID']
 sheet = gc.open_by_key(SHEET_ID)
-ws = sheet.worksheet('Лист1')  # ИМЯ ЛИСТА ДОЛЖНО СОВПАДАТЬ
+ws = sheet.worksheet('Эксперты')  # ИМЯ ЛИСТА ДОЛЖНО СОВПАДАТЬ
 
 logging.basicConfig(level=logging.INFO)
 
