@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,33 +19,34 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO)
 TOKEN      = os.environ['TELEGRAM_TOKEN']
 SHEET_ID   = os.environ['SHEET_ID']
-CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
+CREDS_JSON = os.environ['GSPREAD_CREDENTIALS_JSON']
 
-# ========== Подключение к Google Sheets ==========
-SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds  = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
-gc     = gspread.authorize(creds)
-sheet  = gc.open_by_key(SHEET_ID)
+# ========== Авторизация Google Sheets ==========
+creds_dict = json.loads(CREDS_JSON)
+SCOPES     = ['https://spreadsheets.google.com/feeds','https://www.googleapis.com/auth/drive']
+creds      = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+gc         = gspread.authorize(creds)
+sheet      = gc.open_by_key(SHEET_ID)
 
-# ========== Утилиты для работы со специалистами ==========
+# ========== Утилиты для специалистов ==========
 def get_specialists():
-    ws = sheet.worksheet('Лист1')
+    ws   = sheet.worksheet('Лист1')
     recs = ws.get_all_records()
     specs = []
     for r in recs:
         specs.append({
-            'fio':           r.get('ФИО эксперта', ''),
-            'city':          r.get('город эксперта', ''),
-            'sphere':        r.get('сфера', ''),
-            'description':   r.get('описание', ''),
-            'photo_file_id': r.get('photo_file_id', ''),
+            'fio':           r.get('ФИО эксперта',''),
+            'city':          r.get('город эксперта',''),
+            'sphere':        r.get('сфера',''),
+            'description':   r.get('описание',''),
+            'photo_file_id': r.get('photo_file_id',''),
             'telegram_id':   r.get('Telegram ID'),
-            'slots':         [s.strip() for s in r.get('Slots', '').split(';') if s.strip()]
+            'slots':         [s.strip() for s in r.get('Slots','').split(';') if s.strip()]
         })
     return specs
 
 def get_specialist_row(telegram_id):
-    ws = sheet.worksheet('Лист1')
+    ws   = sheet.worksheet('Лист1')
     recs = ws.get_all_records()
     for idx, r in enumerate(recs, start=2):
         if str(r.get('Telegram ID')) == str(telegram_id):
@@ -129,27 +130,27 @@ conv_reg = ConversationHandler(
 TIME_DATE, TIME_SELECT = range(2)
 
 async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    dates = [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-    kb = [[InlineKeyboardButton(d, callback_data=f"date_{d}")] for d in dates]
+    dates = [(datetime.now()+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    kb    = [[InlineKeyboardButton(d, callback_data=f"date_{d}")] for d in dates]
     await update.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['slot_times'] = []
     return TIME_DATE
 
 async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q    = update.callback_query; await q.answer()
     date = q.data.split("_",1)[1]
     ctx.user_data['slot_date'] = date
     slots = [f"{h:02d}:00" for h in range(9,19)]
-    kb = [[InlineKeyboardButton(
-        f"{'✅ ' if t in ctx.user_data['slot_times'] else ''}{t}",
-        callback_data=f"tselect_{t}"
-    )] for t in slots]
+    kb    = [[InlineKeyboardButton(
+                f"{'✅ ' if t in ctx.user_data['slot_times'] else ''}{t}",
+                callback_data=f"tselect_{t}"
+            )] for t in slots]
     kb += [[InlineKeyboardButton("Готово", callback_data="tconfirm")]]
     await q.message.edit_text(f"Дата: {date}\nВыберите время:", reply_markup=InlineKeyboardMarkup(kb))
     return TIME_SELECT
 
 async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q    = update.callback_query; await q.answer()
     data = q.data
     if data.startswith("tselect_"):
         t = data.split("_",1)[1]
@@ -178,20 +179,23 @@ conv_time = ConversationHandler(
     fallbacks=[]
 )
 
-# ========== Консультации: выбор региона/эксперта/даты/времени ==========
+# ========== Меню консультаций ==========
 CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME = range(5)
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer() if update.callback_query else None
+    if update.callback_query:
+        await update.callback_query.answer()
+        target = update.callback_query.message
+    else:
+        target = update.message
     specs   = get_specialists()
     regions = sorted({sp['city'] for sp in specs})
     kb      = [[InlineKeyboardButton(r, callback_data=f"region_{r}")] for r in regions]
-    target  = update.callback_query.message if update.callback_query else update.message
     await target.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['specialists'] = specs
     return CHOOSING_REGION
 
-# … сюда вставьте ваши cb_region, cb_field, cb_spec, cb_date, cb_time из existing кода …
+# сюда вставляются ваши cb_region, cb_field, cb_spec, cb_date, cb_time
 
 # ========== Новый /start с двумя кнопками ==========
 async def start_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -212,15 +216,13 @@ async def cb_register_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     return await reg_start(update, ctx)
 
-# ========== Сборка и запуск бота ==========
+# ========== Сборка и запуск ==========
 application = ApplicationBuilder().token(TOKEN).build()
 
-# заменяем предыдущий /start
 application.add_handler(CommandHandler("start", start_command))
 application.add_handler(CallbackQueryHandler(cb_consult,        pattern="^consult$"))
-application.add_handler(CallbackQueryHandler(cb_register_button, pattern="^register$"))
+application.add_handler(CallbackQueryHandler(cb_register_button,pattern="^register$"))
 
-# старые handlers
 application.add_handler(conv_reg)
 application.add_handler(conv_time)
 application.add_handler(ConversationHandler(
