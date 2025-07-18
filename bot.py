@@ -2,190 +2,157 @@ import os
 import json
 import logging
 import gspread
-from google.oauth2.service_account import Credentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
+)
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    ContextTypes,
-    filters,
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
 from datetime import datetime, timedelta
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Чтение переменных окружения
-TOKEN       = os.environ["TELEGRAM_TOKEN"]
-SHEET_ID    = os.environ["SHEET_ID"]
-CREDS_JSON  = os.environ["GSPREAD_CREDENTIALS_JSON"]
+TOKEN      = os.environ['TELEGRAM_TOKEN']
+SHEET_ID   = os.environ['SHEET_ID']
+CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 
-# Авторизация в Google Sheets
-creds_dict = json.loads(CREDS_JSON)
-scopes     = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-creds      = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-gc         = gspread.authorize(creds)
-sheet      = gc.open_by_key(SHEET_ID)
-experts_ws = sheet.worksheet("Эксперты")
-try:
-    bookings_ws = sheet.worksheet("Заявки")
-except gspread.exceptions.WorksheetNotFound:
-    bookings_ws = sheet.add_worksheet("Заявки", rows="1000", cols="5")
+# Google Sheets подключение (через google-auth)
+import google.auth
+from google.oauth2.service_account import Credentials
+SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
+gc = gspread.authorize(creds)
+spreadsheet = gc.open_by_key(SHEET_ID)
 
-# Шаги ConversationHandler
-(
-    STEP_CHOOSE,
-    STEP_REG_NAME, STEP_REG_CITY, STEP_REG_SPHERE, STEP_REG_DESC, STEP_REG_PHOTO,
-    STEP_BOOK_NAME, STEP_BOOK_SELECT, STEP_BOOK_DATE, STEP_BOOK_TIME, STEP_BOOK_NOTE
-) = range(11)
+def get_specialists():
+    ws = spreadsheet.worksheet('Эксперты')
+    records = ws.get_all_records()
+    specialists = []
+    for i, row in enumerate(records, 2):  # со 2-й строки
+        spec = dict(row)
+        spec['row_num'] = i
+        slots = []
+        slots_str = ws.cell(i, 7).value  # 7 - колонка G (Slots)
+        if slots_str:
+            for el in slots_str.split(';'):
+                el = el.strip()
+                if el and ' ' in el:
+                    slots.append(el)
+        spec['slots'] = slots
+        specialists.append(spec)
+    return specialists
 
-def load_experts():
-    rows = experts_ws.get_all_records()
-    return rows
+def get_specialist_row(telegram_id):
+    ws = spreadsheet.worksheet('Эксперты')
+    records = ws.get_all_records()
+    for i, row in enumerate(records, 2):
+        if str(row.get('Telegram ID')) == str(telegram_id):
+            return ws, i, row
+    return None, None, None
 
-async def start_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        [InlineKeyboardButton("📋 Консультации", callback_data="act_consult")],
-        [InlineKeyboardButton("✏️ Регистрация эксперта", callback_data="act_register")],
+def add_slots_for_specialist(telegram_id, date, times):
+    ws, row_num, _ = get_specialist_row(telegram_id)
+    if not row_num:
+        return False
+    cur_slots = ws.cell(row_num, 7).value or ''
+    cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
+    for t in times:
+        slot = f"{date} {t}"
+        if slot not in cur_list:
+            cur_list.append(slot)
+    ws.update_cell(row_num, 7, ';'.join(sorted(cur_list)))
+    return True
+
+# --- СТАРТ, две кнопки ---
+CHOOSING, REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(6)
+
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("Нужна консультация", callback_data="need_consult")],
+        [InlineKeyboardButton("Зарегистрироваться как эксперт", callback_data="register_expert")],
     ]
-    await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
-    return STEP_CHOOSE
+    await update.message.reply_text(
+        "Добро пожаловать! Что вы хотите сделать?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return CHOOSING
 
-async def choose_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "act_consult":
-        await q.message.reply_text("Введите ваше ФИО для записи:")
-        return STEP_BOOK_NAME
-    else:
-        await q.message.reply_text("Регистрация эксперта: введите ваше ФИО:")
-        return STEP_REG_NAME
+async def cb_need_consult(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    specialists = get_specialists()
+    regions = sorted(set([spec['Город'] for spec in specialists]))
+    kb = [[InlineKeyboardButton(r, callback_data=f'region_{r}')] for r in regions]
+    await update.callback_query.message.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['specialists'] = specialists
+    return REG_NAME  # Переход на следующий шаг (или создайте свой)
 
-# Регистрация эксперта
+async def cb_register_expert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("Введите ваше ФИО:")
+    return REG_NAME
+
 async def reg_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["reg_fio"] = update.message.text.strip()
-    await update.message.reply_text("Укажите город:")
-    return STEP_REG_CITY
+    ctx.user_data['fio'] = update.message.text
+    await update.message.reply_text("Введите город:")
+    return REG_CITY
 
 async def reg_city(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["reg_city"] = update.message.text.strip()
-    await update.message.reply_text("Укажите сферу:")
-    return STEP_REG_SPHERE
+    ctx.user_data['city'] = update.message.text
+    await update.message.reply_text("Введите сферу деятельности:")
+    return REG_FIELD
 
-async def reg_sphere(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["reg_sphere"] = update.message.text.strip()
-    await update.message.reply_text("Краткое описание вас как эксперта:")
-    return STEP_REG_DESC
+async def reg_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data['field'] = update.message.text
+    await update.message.reply_text("Напишите кратко о себе:")
+    return REG_DESC
 
 async def reg_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["reg_desc"] = update.message.text.strip()
-    await update.message.reply_text("Пришлите фото (сертификат или портрет):")
-    return STEP_REG_PHOTO
+    ctx.user_data['desc'] = update.message.text
+    await update.message.reply_text("Пришлите фото сертификата или любой документ:")
+    return REG_PHOTO
 
 async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    file_id = update.message.photo[-1].file_id if update.message.photo else ""
-    experts_ws.append_row([
-        ctx.user_data["reg_fio"],
-        ctx.user_data["reg_city"],
-        ctx.user_data["reg_sphere"],
-        ctx.user_data["reg_desc"],
-        file_id
+    file_id = ''
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+    ws = spreadsheet.worksheet('Эксперты')
+    ws.append_row([
+        ctx.user_data['fio'],
+        ctx.user_data['city'],
+        ctx.user_data['field'],
+        ctx.user_data['desc'],
+        file_id,
+        update.effective_user.id,
+        update.effective_user.username or '',
+        ""  # Слоты
     ])
-    await update.message.reply_text("✅ Вы зарегистрированы как эксперт!")
+    await update.message.reply_text("Спасибо, вы зарегистрированы как специалист!")
     return ConversationHandler.END
 
-# Запись на консультацию
-async def book_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["book_name"] = update.message.text.strip()
-    experts = load_experts()
-    kb = [[InlineKeyboardButton(e["ФИО"], callback_data=f"bk_{i}")] for i,e in enumerate(experts)]
-    await update.message.reply_text("Выберите эксперта:", reply_markup=InlineKeyboardMarkup(kb))
-    ctx.user_data["experts_list"] = experts
-    return STEP_BOOK_SELECT
-
-async def book_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    idx = int(q.data.split("_")[1])
-    spec = ctx.user_data["experts_list"][idx]
-    ctx.user_data["book_spec"] = spec
-    caption = f"{spec['ФИО']}\n{spec['описание']}"
-    if spec.get("photo_file_id"):
-        await q.message.reply_photo(photo=spec["photo_file_id"], caption=caption)
-    else:
-        await q.message.reply_text(caption)
-    # даты на неделю вперед
-    dates = [(datetime.now()+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
-    kb = [[InlineKeyboardButton(d, callback_data=f"bd_{d}")] for d in dates]
-    await q.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
-    return STEP_BOOK_DATE
-
-async def book_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    date = q.data.split("_",1)[1]
-    ctx.user_data["book_date"] = date
-    times = ["09:00","12:00","15:00","18:00"]
-    kb = [[InlineKeyboardButton(t, callback_data=f"bt_{t}")] for t in times]
-    await q.message.reply_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
-    return STEP_BOOK_TIME
-
-async def book_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    time = q.data.split("_",1)[1]
-    ctx.user_data["book_time"] = time
-    await q.message.reply_text("Оставьте заметку или вопрос для эксперта:")
-    return STEP_BOOK_NOTE
-
-async def book_note(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    note = update.message.text.strip()
-    data = [
-        datetime.now().isoformat(),
-        ctx.user_data["book_name"],
-        ctx.user_data["book_spec"]["ФИО"],
-        ctx.user_data["book_date"],
-        ctx.user_data["book_time"],
-        note
-    ]
-    bookings_ws.append_row(data)
-    await update.message.reply_text("✅ Вы записаны на консультацию!")
+async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Отменено.")
     return ConversationHandler.END
-
-# Fallback
-fallbacks = [CommandHandler("start", start_cmd)]
-
-conv = ConversationHandler(
-    entry_points=[CommandHandler("start", start_cmd)],
-    states={
-        STEP_CHOOSE:         [CallbackQueryHandler(choose_action, pattern="^act_")],
-        STEP_REG_NAME:       [MessageHandler(filters.TEXT, reg_name)],
-        STEP_REG_CITY:       [MessageHandler(filters.TEXT, reg_city)],
-        STEP_REG_SPHERE:     [MessageHandler(filters.TEXT, reg_sphere)],
-        STEP_REG_DESC:       [MessageHandler(filters.TEXT, reg_desc)],
-        STEP_REG_PHOTO:      [MessageHandler(filters.PHOTO, reg_photo)],
-
-        STEP_BOOK_NAME:      [MessageHandler(filters.TEXT, book_name)],
-        STEP_BOOK_SELECT:    [CallbackQueryHandler(book_select, pattern="^bk_")],
-        STEP_BOOK_DATE:      [CallbackQueryHandler(book_date, pattern="^bd_")],
-        STEP_BOOK_TIME:      [CallbackQueryHandler(book_time, pattern="^bt_")],
-        STEP_BOOK_NOTE:      [MessageHandler(filters.TEXT, book_note)],
-    },
-    fallbacks=fallbacks,
-    per_message=False
-)
 
 application = ApplicationBuilder().token(TOKEN).build()
 
-# Отключаем вебхук перед запуском polling (убираем конфликт)
-application.bot.delete_webhook(drop_pending_updates=True)
+conv = ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={
+        CHOOSING: [
+            CallbackQueryHandler(cb_need_consult, pattern="^need_consult$"),
+            CallbackQueryHandler(cb_register_expert, pattern="^register_expert$"),
+        ],
+        REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
+        REG_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)],
+        REG_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)],
+        REG_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
+        REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)],
+    },
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
 
-# Регистрируем хендлеры и т.д.
 application.add_handler(conv)
 
-# Запуск
 if __name__ == "__main__":
     application.run_polling()
