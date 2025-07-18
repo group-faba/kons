@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -22,16 +22,17 @@ logging.basicConfig(level=logging.INFO)
 # ——— Переменные окружения —————————————————————————————————————
 TOKEN      = os.environ['TELEGRAM_TOKEN']
 SHEET_ID   = os.environ['SHEET_ID']
-CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
+CREDS_JSON = os.environ['GSPREAD_CREDENTIALS_JSON']
 PORT       = int(os.environ.get('PORT', '8080'))
 
 # ——— Google Sheets подключение ————————————————————————————————————
+creds_dict = json.loads(CREDS_JSON)
 SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPES)
+creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.authorize(creds)
 spreadsheet = gc.open_by_key(SHEET_ID)
 
-# ——— Flask для healthcheck (Render) ———————————————————————————
+# ——— Flask healthcheck (Render) ———————————————————————————
 app = Flask(__name__)
 
 @app.route('/', methods=['GET','HEAD'])
@@ -42,12 +43,13 @@ def health():
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 
 async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # отвечает и на /register, и на кнопку
+    # может прийти и как callback_query
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.message.reply_text("Введите ваше ФИО:")
+        msg = update.callback_query.message
     else:
-        await update.message.reply_text("Введите ваше ФИО:")
+        msg = update.message
+    await msg.reply_text("Введите ваше ФИО:")
     return REG_NAME
 
 async def reg_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -71,11 +73,12 @@ async def reg_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return REG_PHOTO
 
 async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # сохраняем file_id, если есть
-    if update.message.photo:
-        ctx.user_data['photo_file_id'] = update.message.photo[-1].file_id
-    else:
-        ctx.user_data['photo_file_id'] = ''
+    # сохраняем file_id
+    ctx.user_data['photo_file_id'] = (
+        update.message.photo[-1].file_id
+        if update.message.photo else
+        ''
+    )
     # добавляем строку в Google-лист
     ws = spreadsheet.worksheet('Лист1')
     ws.append_row([
@@ -87,7 +90,7 @@ async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data['photo_file_id'],
         update.effective_user.id,
         update.effective_user.username or '',
-        ""  # Slots, пусто
+        ""
     ])
     await update.message.reply_text("Готово! Вы зарегистрированы как эксперт.")
     return ConversationHandler.END
@@ -112,8 +115,15 @@ conv_reg = ConversationHandler(
     per_message=False
 )
 
-# ——— ConversationHandler: добавление слотов (/time) ——————————————
+# ——— ConversationHandler: добавление слотов ——————————————————————
 TIME_DATE, TIME_SELECT = range(2)
+
+def get_specialist_row(telegram_id):
+    ws = spreadsheet.worksheet('Лист1')
+    for i, row in enumerate(ws.get_all_records(), start=2):
+        if str(row.get('Telegram ID')) == str(telegram_id):
+            return ws, i
+    return None, None
 
 async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     dates = [(datetime.now() + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
@@ -127,15 +137,14 @@ async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     date = q.data.split('_',1)[1]
     ctx.user_data['slot_date'] = date
     times = [f"{h:02d}:00" for h in range(8,21)]
-    kb = []
     sel = set(ctx.user_data.get('slot_times',[]))
-    for t in times:
-        kb.append([InlineKeyboardButton(
-            ('✅ ' if t in sel else '')+t,
-            callback_data=f'timeselect_{t}'
-        )])
-    kb.append([InlineKeyboardButton("Готово", callback_data='timeconfirm')])
-    kb.append([InlineKeyboardButton("Отменить", callback_data='timeback')])
+    kb = [
+        [InlineKeyboardButton((('✅ ' if t in sel else '') + t), callback_data=f'timeselect_{t}')]
+        for t in times
+    ] + [
+        [InlineKeyboardButton("Готово", callback_data='timeconfirm')],
+        [InlineKeyboardButton("Отмена", callback_data='timeback')]
+    ]
     await q.message.edit_text(f"Дата: {date}\nВыберите время:", reply_markup=InlineKeyboardMarkup(kb))
     return TIME_SELECT
 
@@ -144,53 +153,34 @@ async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = q.data
     if data.startswith('timeselect_'):
         t = data.split('_',1)[1]
-        lst = ctx.user_data.get('slot_times',[])
+        lst = ctx.user_data.setdefault('slot_times',[])
         if t in lst: lst.remove(t)
-        else:       lst.append(t)
-        ctx.user_data['slot_times'] = lst
+        else:         lst.append(t)
         return await time_date(update, ctx)
-    if data=='timeconfirm':
-        date = ctx.user_data['slot_date']
-        times = ctx.user_data.get('slot_times',[])
-        if not times:
-            await q.message.reply_text("Не выбрано ни одного времени.")
-            return TIME_SELECT
-        # сохраняем в таблицу
-        ws,row,_ = get_specialist_row(update.effective_user.id)
+    if data == 'timeconfirm':
+        ws, row = get_specialist_row(update.effective_user.id)
         if not row:
             await q.message.reply_text("Сначала зарегистрируйтесь (/register).")
         else:
-            cur = ws.cell(row,8).value or ''
-            slots = [s.strip() for s in cur.split(';') if s.strip()]
-            for t in times:
-                slot = f"{date} {t}"
-                if slot not in slots: slots.append(slot)
+            date = ctx.user_data['slot_date']
+            slots = set((ws.cell(row,8).value or '').split(';'))
+            for t in ctx.user_data['slot_times']:
+                slots.add(f"{date} {t}")
             ws.update_cell(row,8,';'.join(sorted(slots)))
-            await q.message.reply_text(f"Слоты на {date} добавлены: {', '.join(times)}")
+            await q.message.reply_text(f"Слоты {date}: {', '.join(ctx.user_data['slot_times'])} добавлены.")
         return ConversationHandler.END
-    # отмена
     return ConversationHandler.END
 
 conv_time = ConversationHandler(
     entry_points=[CommandHandler("time", time_start)],
     states={
-        TIME_DATE:  [CallbackQueryHandler(time_date, pattern=r'^timedate_')],
+        TIME_DATE:  [CallbackQueryHandler(time_date,  pattern=r'^timedate_')],
         TIME_SELECT:[CallbackQueryHandler(time_select, pattern=r'^(timeselect_|timeconfirm|timeback)')]
     },
     fallbacks=[]
 )
 
-# вспомогательные для time_select
-def get_specialist_row(telegram_id):
-    ws = spreadsheet.worksheet('Лист1')
-    for i, row in enumerate(ws.get_all_records(),2):
-        if str(row.get('Telegram ID'))==str(telegram_id):
-            return ws, i, row
-    return None, None, None
-
-# ——— ConversationHandler: основная навигация (/start + кнопки) ——————
-CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME = range(5)
-
+# ——— Основной /start и кнопки ——————————————————————————————————
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("📋 Консультации", callback_data="consult")],
@@ -198,12 +188,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ]
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.message.reply_text("Привет! Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
+        await update.callback_query.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
     else:
-        await update.message.reply_text("Привет! Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
-    return ConversationHandler.END  # или можно ветвить дальше под «consult»
+        await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(kb))
 
-# ——— Собираем всё вместе —————————————————————————————————————————
 application = ApplicationBuilder().token(TOKEN).build()
 
 application.add_handler(conv_reg)
@@ -212,7 +200,7 @@ application.add_handler(CommandHandler("start", cmd_start))
 application.add_handler(CallbackQueryHandler(cmd_start, pattern="^consult$"))
 application.add_handler(CallbackQueryHandler(reg_start, pattern="^register$"))
 
-# ——— Запуск webhook + polling ——————————————————————————————————
+# ——— Запускаем одновременно Flask (health) и polling бот —————————
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
