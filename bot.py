@@ -130,6 +130,17 @@ async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Спасибо, вы зарегистрированы как специалист!")
     return ConversationHandler.END
 
+async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    region = q.data.split("_", 1)[1]
+    # Дальше — фильтруешь специалистов и отправляешь список сфер
+    fields = sorted(set([spec['сфера'] for spec in ctx.user_data['specialists'] if spec['Город'] == region]))
+    kb = [[InlineKeyboardButton(f, callback_data=f'field_{f}')] for f in fields]
+    await q.message.reply_text(f"Регион: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['selected_region'] = region
+    return CHOOSING_FIELD
+
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Отменено.")
     return ConversationHandler.END
