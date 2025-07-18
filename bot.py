@@ -1,102 +1,60 @@
 import os
 import json
-import gspread
 import logging
+import gspread
 from google.oauth2.service_account import Credentials
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     ConversationHandler, MessageHandler, ContextTypes, filters
 )
 
-logging.basicConfig(level=logging.INFO)
-TOKEN = os.environ['TELEGRAM_TOKEN']
-SHEET_ID = os.environ['SHEET_ID']
+TOKEN      = os.environ['TELEGRAM_TOKEN']
+SHEET_ID   = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 
-SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+# Google Sheets авторизация
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_key(SHEET_ID)
-ws = sheet.worksheet('Эксперты')
+ws = sheet.worksheet('Лист1')  # ИМЯ ЛИСТА ДОЛЖНО СОВПАДАТЬ
 
-CHOOSING_ACTION, CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME, REG_NAME, REG_CITY, REG_FIELD, REG_DESC = range(10)
+logging.basicConfig(level=logging.INFO)
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        [InlineKeyboardButton("Нужна консультация", callback_data="need_consult")],
-        [InlineKeyboardButton("Зарегистрироваться как эксперт", callback_data="register_expert")]
+REG_FIO, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("Нужна консультация", callback_data='need_consult')],
+        [InlineKeyboardButton("Зарегистрироваться как эксперт", callback_data='register')]
     ]
-    if update.message:
-        await update.message.reply_text(
-            "Добро пожаловать! Что вы хотите сделать?",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-    elif update.callback_query:
-        await update.callback_query.message.edit_text(
-            "Добро пожаловать! Что вы хотите сделать?",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-    return CHOOSING_ACTION
-
-async def cb_need_consult(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    records = ws.get_all_records()
-    regions = sorted(set([row['Город'] for row in records if row.get('Город')]))
-    kb = [[InlineKeyboardButton(r, callback_data=f"region_{r}")] for r in regions]
-    await update.callback_query.message.reply_text(
-        "Выберите регион:", reply_markup=InlineKeyboardMarkup(kb)
+    await update.message.reply_text(
+        "Добро пожаловать! Что вы хотите сделать?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    return CHOOSING_REGION
 
-async def cb_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    region = update.callback_query.data.split('_', 1)[1]
-    records = ws.get_all_records()
-    fields = sorted(set([row['сфера'] for row in records if row.get('Город') == region]))
-    kb = [[InlineKeyboardButton(f, callback_data=f"field_{f}")] for f in fields]
-    await update.callback_query.message.reply_text(
-        f"Регион: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return CHOOSING_FIELD
+async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'register':
+        await query.message.reply_text("Введите ваше ФИО:")
+        return REG_FIO
+    elif query.data == 'need_consult':
+        # Выводим список специалистов из таблицы
+        records = ws.get_all_records()
+        specs = [(r['ФИО эксперта'], r['описание'], r['photo_file_id']) for r in records if r.get('ФИО эксперта')]
+        keyboard = [
+            [InlineKeyboardButton(name, callback_data=f"spec_{i}")]
+            for i, (name, _, _) in enumerate(specs)
+        ]
+        await query.message.reply_text("Выберите специалиста:", reply_markup=InlineKeyboardMarkup(keyboard))
+        context.user_data['specs'] = specs
+        return "SHOW_SPEC"
+    else:
+        await query.message.reply_text("Неизвестная команда.")
 
-async def cb_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    field = update.callback_query.data.split('_', 1)[1]
-    records = ws.get_all_records()
-    region = None
-    # найти выбранный регион из предыдущего шага, если надо
-    kb = []
-    for row in records:
-        if row.get('сфера') == field:
-            kb.append([InlineKeyboardButton(row['ФИО эксперта'], callback_data=f"spec_{row['ФИО эксперта']}")])
-    await update.callback_query.message.reply_text(
-        f"Сфера: {field}\nВыберите эксперта:", reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return CHOOSING_SPEC
-
-async def cb_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    expert_name = update.callback_query.data.split('_', 1)[1]
-    records = ws.get_all_records()
-    desc = ''
-    for row in records:
-        if row['ФИО эксперта'] == expert_name:
-            desc = row.get('описание', '')
-    await update.callback_query.message.reply_text(
-        f"{expert_name}\n{desc}\nВыберите дату:\n(даты не реализованы для краткости)",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back")]])
-    )
-    return CHOOSING_DATE
-
-async def cb_register_expert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("Введите ваше ФИО:")
-    return REG_NAME
-
-async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reg_fio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['fio'] = update.message.text
     await update.message.reply_text("Введите город:")
     return REG_CITY
@@ -108,55 +66,64 @@ async def reg_city(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['field'] = update.message.text
-    await update.message.reply_text("Опишите себя коротко:")
+    await update.message.reply_text("Опишите себя:")
     return REG_DESC
 
 async def reg_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['desc'] = update.message.text
-    # Сохраняем в таблицу
+    await update.message.reply_text("Пришлите фото (как изображение, не файл):")
+    return REG_PHOTO
+
+async def reg_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo = update.message.photo
+    if not photo:
+        await update.message.reply_text("Пришли фото (как изображение, не файл)!")
+        return REG_PHOTO
+    file_id = photo[-1].file_id
+    context.user_data['photo_file_id'] = file_id
     ws.append_row([
         context.user_data['fio'],
         context.user_data['city'],
         context.user_data['field'],
         context.user_data['desc'],
-        '', '', '', ''  # остальные столбцы пустые для примера
+        file_id,
+        str(update.effective_user.id),
+        update.effective_user.username or "",
+        ""  # Slots
     ])
     await update.message.reply_text("✅ Вы зарегистрированы как эксперт!")
     return ConversationHandler.END
 
+async def show_spec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data.replace("spec_", ""))
+    spec = context.user_data['specs'][idx]
+    name, desc, file_id = spec
+    if file_id:
+        await query.message.reply_photo(photo=file_id, caption=f"{name}\n{desc}")
+    else:
+        await query.message.reply_text(f"{name}\n{desc}")
+
+    return ConversationHandler.END
+
+application = ApplicationBuilder().token(TOKEN).build()
+
 conv = ConversationHandler(
-    entry_points=[CommandHandler("start", cmd_start)],
+    entry_points=[CommandHandler("start", start)],
     states={
-        CHOOSING_ACTION: [
-            CallbackQueryHandler(cb_need_consult, pattern="^need_consult$"),
-            CallbackQueryHandler(cb_register_expert, pattern="^register_expert$")
-        ],
-        CHOOSING_REGION: [
-            CallbackQueryHandler(cb_region, pattern="^region_")
-        ],
-        CHOOSING_FIELD: [
-            CallbackQueryHandler(cb_field, pattern="^field_")
-        ],
-        CHOOSING_SPEC: [
-            CallbackQueryHandler(cb_spec, pattern="^spec_")
-        ],
-        REG_NAME: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)
-        ],
-        REG_CITY: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)
-        ],
-        REG_FIELD: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)
-        ],
-        REG_DESC: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)
-        ],
+        REG_FIO:   [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_fio)],
+        REG_CITY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_city)],
+        REG_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_field)],
+        REG_DESC:  [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
+        REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)],
+        "SHOW_SPEC": [CallbackQueryHandler(show_spec, pattern=r"^spec_")]
     },
     fallbacks=[],
 )
 
+application.add_handler(conv)
+application.add_handler(CallbackQueryHandler(main_menu_handler, pattern='^(register|need_consult)$'))
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(conv)
-    app.run_polling()
+    application.run_polling()
