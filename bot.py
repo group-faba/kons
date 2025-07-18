@@ -72,13 +72,10 @@ def get_specialist_row(tg_id):
 
 # ——— Константы состояний ———
 (
-    # регистрация эксперта
     REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO,
-    # выбор слотов у эксперта
     TIME_DATE, TIME_SELECT,
-    # выбор консультации
     CH_REGION, CH_FIELD, CH_SPEC, CH_DATE, CH_TIME
-) = range(11)
+) = range(12)
 
 # ——— ОБРАБОТЧИК /start ———
 async def start_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
