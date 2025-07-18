@@ -178,8 +178,14 @@ conv = ConversationHandler(
     per_message=False
 )
 
+application = ApplicationBuilder().token(TOKEN).build()
+
+# Отключаем вебхук перед запуском polling (убираем конфликт)
+application.bot.delete_webhook(drop_pending_updates=True)
+
+# Регистрируем хендлеры и т.д.
+application.add_handler(conv)
+
+# Запуск
 if __name__ == "__main__":
-    # Если раньше был вебхук — сбросим его
-    application.bot.delete_webhook(drop_pending_updates=True)
-    # Запустим чистый polling
     application.run_polling()
