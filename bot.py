@@ -179,6 +179,7 @@ conv = ConversationHandler(
 )
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(conv)
-    app.run_polling()
+    # Если раньше был вебхук — сбросим его
+    application.bot.delete_webhook(drop_pending_updates=True)
+    # Запустим чистый polling
+    application.run_polling()
