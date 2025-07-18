@@ -421,11 +421,9 @@ application.add_handler(conv_main)
 
 # --- Flask + polling для Render
 def run_flask():
-    app.run(host='0.0.0.0', port=PORT)
+    app.run(host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    # Запускаем Flask (чтобы шарить health-check на /)
-    from threading import Thread
-    Thread(target=lambda: app.run(host="0.0.0.0", port=PORT), daemon=True).start()
-    # И запускаем обычный polling
+    import threading
+    threading.Thread(target=run_flask, daemon=True).start()
     application.run_polling()
