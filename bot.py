@@ -20,7 +20,7 @@ SCOPES = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/a
 creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_key(SHEET_ID)
-ws = sheet.worksheet('Лист1')
+ws = sheet.worksheet('Эксперты')
 
 CHOOSING_ACTION, CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME, REG_NAME, REG_CITY, REG_FIELD, REG_DESC = range(10)
 
