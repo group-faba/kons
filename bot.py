@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 from datetime import datetime, timedelta
 
-# ========== Логирование и переменные окружения ==========
+# ========== Логирование и настройка ==========
 logging.basicConfig(level=logging.INFO)
 TOKEN      = os.environ['TELEGRAM_TOKEN']
 SHEET_ID   = os.environ['SHEET_ID']
@@ -27,10 +27,10 @@ SCOPES     = ['https://spreadsheets.google.com/feeds','https://www.googleapis.co
 creds      = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc         = gspread.authorize(creds)
 sheet      = gc.open_by_key(SHEET_ID)
+ws         = sheet.worksheet('Лист1')  # ваш лист
 
-# ========== Утилиты для специалистов ==========
+# ========== Утилиты ==========
 def get_specialists():
-    ws   = sheet.worksheet('Лист1')
     recs = ws.get_all_records()
     specs = []
     for r in recs:
@@ -46,7 +46,6 @@ def get_specialists():
     return specs
 
 def get_specialist_row(telegram_id):
-    ws   = sheet.worksheet('Лист1')
     recs = ws.get_all_records()
     for idx, r in enumerate(recs, start=2):
         if str(r.get('Telegram ID')) == str(telegram_id):
@@ -57,7 +56,7 @@ def add_slots_for_specialist(telegram_id, date, times):
     ws_obj, row, _ = get_specialist_row(telegram_id)
     if not row:
         return False
-    cur = ws_obj.cell(row, 9).value or ''  # коло́нка I — Slots
+    cur = ws_obj.cell(row, 9).value or ''  # колонка I — Slots
     lst = [s.strip() for s in cur.split(';') if s.strip()]
     for t in times:
         slot = f"{date} {t}"
@@ -66,7 +65,7 @@ def add_slots_for_specialist(telegram_id, date, times):
     ws_obj.update_cell(row, 9, ';'.join(sorted(lst)))
     return True
 
-# ========== Conversation: регистрация эксперта ==========
+# ========== Регистрация эксперта ==========
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 
 async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -95,7 +94,6 @@ async def reg_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     file_id = update.message.photo[-1].file_id if update.message.photo else ''
-    ws = sheet.worksheet('Лист1')
     ws.append_row([
         datetime.now().isoformat(),
         ctx.user_data['fio'],
@@ -126,11 +124,11 @@ conv_reg = ConversationHandler(
     fallbacks=[CommandHandler("cancel", reg_cancel)],
 )
 
-# ========== Conversation: добавление слотов (/time) ==========
+# ========== Добавление слотов (/time) ==========
 TIME_DATE, TIME_SELECT = range(2)
 
 async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    dates = [(datetime.now()+timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    dates = [(datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
     kb    = [[InlineKeyboardButton(d, callback_data=f"date_{d}")] for d in dates]
     await update.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['slot_times'] = []
@@ -164,9 +162,7 @@ async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ctx.user_data['slot_date'],
             ctx.user_data['slot_times']
         )
-        await q.message.reply_text(
-            "Слоты добавлены!" if ok else "Ошибка: вы не эксперт."
-        )
+        await q.message.reply_text("Слоты добавлены!" if ok else "Ошибка: вы не эксперт.")
         return ConversationHandler.END
     return TIME_SELECT
 
@@ -179,7 +175,7 @@ conv_time = ConversationHandler(
     fallbacks=[]
 )
 
-# ========== Меню консультаций ==========
+# ========== Консультации ==========
 CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME = range(5)
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -195,9 +191,83 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['specialists'] = specs
     return CHOOSING_REGION
 
-# сюда вставляются ваши cb_region, cb_field, cb_spec, cb_date, cb_time
+async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q      = update.callback_query; await q.answer()
+    region = q.data.split("_",1)[1]
+    ctx.user_data['selected_region'] = region
+    specs = ctx.user_data['specialists']
+    fields = sorted({s['sphere'] for s in specs if s['city']==region})
+    kb     = [[InlineKeyboardButton(f, callback_data=f"field_{f}")] for f in fields]
+    kb.append([InlineKeyboardButton("← Назад", callback_data="consult")])
+    await q.message.edit_text(f"Регион: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb))
+    return CHOOSING_FIELD
 
-# ========== Новый /start с двумя кнопками ==========
+async def cb_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q     = update.callback_query; await q.answer()
+    field = q.data.split("_",1)[1]
+    region= ctx.user_data['selected_region']
+    specs = ctx.user_data['specialists']
+    filtered = [s for s in specs if s['city']==region and s['sphere']==field]
+    ctx.user_data['filtered_specs'] = filtered
+    kb     = [[InlineKeyboardButton(s['fio'], callback_data=f"spec_{s['telegram_id']}")] for s in filtered]
+    kb.append([InlineKeyboardButton("← Назад", callback_data=f"region_{region}")])
+    await q.message.edit_text(f"Город: {region}\nСфера: {field}\nВыберите специалиста:", reply_markup=InlineKeyboardMarkup(kb))
+    return CHOOSING_SPEC
+
+async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q      = update.callback_query; await q.answer()
+    tid    = q.data.split("_",1)[1]
+    spec   = next(s for s in ctx.user_data['filtered_specs'] if str(s['telegram_id'])==tid)
+    ctx.user_data['selected_specialist'] = spec
+    text   = f"{spec['fio']}\n{spec['description']}"
+    if spec['photo_file_id']:
+        await q.message.delete()
+        await q.message.reply_photo(photo=spec['photo_file_id'], caption=text)
+    else:
+        await q.message.delete()
+        await q.message.reply_text(text)
+    dates = sorted({slot.split()[0] for slot in spec['slots']})
+    kb    = [[InlineKeyboardButton(d, callback_data=f"date_{d}")] for d in dates]
+    kb.append([InlineKeyboardButton("← Назад", callback_data=f"field_{spec['sphere']}")])
+    await q.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
+    return CHOOSING_DATE
+
+async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q      = update.callback_query; await q.answer()
+    date   = q.data.split("_",1)[1]
+    spec   = ctx.user_data['selected_specialist']
+    ctx.user_data['selected_date'] = date
+    times  = [slot.split()[1] for slot in spec['slots'] if slot.startswith(date)]
+    kb     = [[InlineKeyboardButton(t, callback_data=f"time_{t}")] for t in times]
+    kb.append([InlineKeyboardButton("← Назад", callback_data=f"spec_{spec['telegram_id']}")])
+    await q.message.edit_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
+    return CHOOSING_TIME
+
+async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q    = update.callback_query; await q.answer()
+    t    = q.data.split("_",1)[1]
+    spec = ctx.user_data['selected_specialist']
+    date = ctx.user_data['selected_date']
+    ws_obj, row, _ = get_specialist_row(spec['telegram_id'])
+    slots_str = ws_obj.cell(row,9).value or ''
+    slots = [s.strip() for s in slots_str.split(';') if s.strip()]
+    slot = f"{date} {t}"
+    if slot not in slots:
+        await q.message.reply_text("Это время уже занято.")
+        return ConversationHandler.END
+    slots.remove(slot)
+    ws_obj.update_cell(row,9,';'.join(slots))
+    await q.message.reply_text(f"Вы записались к {spec['fio']} на {slot}")
+    try:
+        await ctx.bot.send_message(
+            spec['telegram_id'],
+            f"Новая запись: {update.effective_user.full_name} на {slot}"
+        )
+    except:
+        pass
+    return ConversationHandler.END
+
+# ========== Главное меню /start ==========
 async def start_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("📋 Консультации",         callback_data="consult")],
@@ -217,16 +287,16 @@ async def cb_register_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return await reg_start(update, ctx)
 
 # ========== Сборка и запуск ==========
-application = ApplicationBuilder().token(TOKEN).build()
+app = ApplicationBuilder().token(TOKEN).build()
 
-application.add_handler(CommandHandler("start", start_command))
-application.add_handler(CallbackQueryHandler(cb_consult,        pattern="^consult$"))
-application.add_handler(CallbackQueryHandler(cb_register_button,pattern="^register$"))
+app.add_handler(CommandHandler("start", start_command))
+app.add_handler(CallbackQueryHandler(cb_consult,        pattern="^consult$"))
+app.add_handler(CallbackQueryHandler(cb_register_button,pattern="^register$"))
 
-application.add_handler(conv_reg)
-application.add_handler(conv_time)
-application.add_handler(ConversationHandler(
-    entry_points=[CommandHandler("start", cmd_start)],
+app.add_handler(conv_reg)
+app.add_handler(conv_time)
+app.add_handler(ConversationHandler(
+    entry_points=[CallbackQueryHandler(cb_consult, pattern="^consult$")],
     states={
         CHOOSING_REGION: [CallbackQueryHandler(cb_region, pattern=r"^region_")],
         CHOOSING_FIELD:  [CallbackQueryHandler(cb_field,  pattern=r"^field_")],
@@ -238,4 +308,4 @@ application.add_handler(ConversationHandler(
 ))
 
 if __name__ == "__main__":
-    application.run_polling()
+    app.run_polling()
