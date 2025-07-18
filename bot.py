@@ -27,7 +27,7 @@ SCOPES     = ['https://spreadsheets.google.com/feeds','https://www.googleapis.co
 creds      = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc         = gspread.authorize(creds)
 sheet      = gc.open_by_key(SHEET_ID)
-ws         = sheet.worksheet('Лист1')  # ваш лист
+ws         = experts_ws = sheet.worksheet('Эксперты')  # ваш лист
 
 # ========== Утилиты ==========
 def get_specialists():
