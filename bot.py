@@ -27,7 +27,12 @@ SCOPES     = ['https://spreadsheets.google.com/feeds','https://www.googleapis.co
 creds      = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc         = gspread.authorize(creds)
 sheet      = gc.open_by_key(SHEET_ID)
-ws         = experts_ws = sheet.worksheet('Эксперты')  # ваш лист
+ws         = sheet.worksheet('Эксперты')  # Убедитесь, что лист называется «Эксперты»
+
+# ========== Вспомогательная функция ==========
+def _target(update: Update):
+    # выбираем, куда слать ответ
+    return update.callback_query.message if update.callback_query else update.message
 
 # ========== Утилиты ==========
 def get_specialists():
@@ -35,10 +40,10 @@ def get_specialists():
     specs = []
     for r in recs:
         specs.append({
-            'fio':           r.get('ФИО эксперта',''),
-            'city':          r.get('город эксперта',''),
-            'sphere':        r.get('сфера',''),
-            'description':   r.get('описание',''),
+            'fio':           r.get('ФИО',''),
+            'city':          r.get('Город',''),
+            'sphere':        r.get('Сфера',''),
+            'description':   r.get('Описание',''),
             'photo_file_id': r.get('photo_file_id',''),
             'telegram_id':   r.get('Telegram ID'),
             'slots':         [s.strip() for s in r.get('Slots','').split(';') if s.strip()]
@@ -56,7 +61,7 @@ def add_slots_for_specialist(telegram_id, date, times):
     ws_obj, row, _ = get_specialist_row(telegram_id)
     if not row:
         return False
-    cur = ws_obj.cell(row, 9).value or ''  # колонка I — Slots
+    cur = ws_obj.cell(row, 9).value or ''
     lst = [s.strip() for s in cur.split(';') if s.strip()]
     for t in times:
         slot = f"{date} {t}"
@@ -69,7 +74,8 @@ def add_slots_for_specialist(telegram_id, date, times):
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 
 async def reg_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Введите ваше ФИО:")
+    tgt = _target(update)
+    await tgt.reply_text("Введите ваше ФИО:")
     return REG_NAME
 
 async def reg_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -109,7 +115,8 @@ async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Регистрация отменена.")
+    tgt = _target(update)
+    await tgt.reply_text("Регистрация отменена.")
     return ConversationHandler.END
 
 conv_reg = ConversationHandler(
@@ -181,22 +188,22 @@ CHOOSING_REGION, CHOOSING_FIELD, CHOOSING_SPEC, CHOOSING_DATE, CHOOSING_TIME = r
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.answer()
-        target = update.callback_query.message
+        tgt = update.callback_query.message
     else:
-        target = update.message
+        tgt = update.message
     specs   = get_specialists()
     regions = sorted({sp['city'] for sp in specs})
     kb      = [[InlineKeyboardButton(r, callback_data=f"region_{r}")] for r in regions]
-    await target.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
+    await tgt.reply_text("Выберите регион:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['specialists'] = specs
     return CHOOSING_REGION
 
 async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q      = update.callback_query; await q.answer()
     region = q.data.split("_",1)[1]
-    ctx.user_data['selected_region'] = region
-    specs = ctx.user_data['specialists']
+    specs  = ctx.user_data['specialists']
     fields = sorted({s['sphere'] for s in specs if s['city']==region})
+    ctx.user_data['selected_region'] = region
     kb     = [[InlineKeyboardButton(f, callback_data=f"field_{f}")] for f in fields]
     kb.append([InlineKeyboardButton("← Назад", callback_data="consult")])
     await q.message.edit_text(f"Регион: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb))
