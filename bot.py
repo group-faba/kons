@@ -129,11 +129,18 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # --- Блок добавления слотов экспертом (через /time)
 async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # Кнопки с датами на неделю вперед
+    # Проверяем, через что пришёл апдейт
+    if update.message:
+        msg = update.message
+    elif update.callback_query:
+        msg = update.callback_query.message
+    else:
+        return  # если совсем что-то не так
+
     today = datetime.now()
     dates = [(today + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
     kb = [[InlineKeyboardButton(date, callback_data=f"time_date_{date}")] for date in dates]
-    await update.message.reply_text(
+    await msg.reply_text(
         "Выберите дату для слота:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
