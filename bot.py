@@ -193,6 +193,10 @@ consult_conv = ConversationHandler(
     fallbacks=[]
 )
 
+@app.route("/", methods=["GET", "HEAD"])
+def health():
+    return "OK", 200
+
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(reg_conv)
