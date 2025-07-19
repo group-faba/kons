@@ -65,11 +65,20 @@ def add_slots_for_specialist(telegram_id, date, times):
     ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
     return True
 
+def remove_slot(telegram_id, slot_to_remove):
+    ws, row_num, row = get_specialist_row(telegram_id)
+    if not row_num:
+        return False
+    cur_slots = ws.cell(row_num, 9).value or ''
+    slots = [s.strip() for s in cur_slots.split(';') if s.strip()]
+    slots = [s for s in slots if s != slot_to_remove]
+    ws.update_cell(row_num, 9, ';'.join(slots))
+    return True
+
 # Константы для ConversationHandler
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 SELECT_REGION, SELECT_FIELD, SELECT_SPEC, SELECT_DATE, SELECT_TIME = range(5)
 
-# ----------- /start -----------
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("Нужна консультация", callback_data="need_consult")],
@@ -80,7 +89,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# ----------- Регистрация эксперта -----------
+# --- Регистрация эксперта (оставил как есть) ---
 async def cb_register_expert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.message.reply_text("Введите ваше ФИО:")
@@ -126,7 +135,7 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Регистрация отменена.")
     return ConversationHandler.END
 
-# ----------- Консультации -----------
+# --- Консультация ---
 async def cb_need_consult(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     specialists = get_specialists()
@@ -155,6 +164,7 @@ async def cb_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['filtered_specs'] = {str(spec["row_num"]): spec for spec in specs}
     return SELECT_SPEC
 
+# --- Новый блок: Выбор даты и времени слота пользователя ---
 async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     spec_row = update.callback_query.data.split('_', 1)[1]
     spec = ctx.user_data['filtered_specs'][spec_row]
@@ -167,85 +177,56 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.callback_query.message.reply_text(text)
-    await update.callback_query.message.reply_text("Выберите дату:\n(даты не реализованы для краткости)",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back")]]))
+    # Готовим список дат-слотов
+    slots = spec.get("slots", [])
+    # Оставляем только будущие слоты
+    slots = [s for s in slots if s.strip() and len(s.split(" ")) == 2]
+    # Формируем список уникальных дат
+    dates = sorted(list(set([s.split(" ")[0] for s in slots])))
+    if not dates:
+        await update.callback_query.message.reply_text("Нет доступных дат для записи")
+        return ConversationHandler.END
+    kb = [[InlineKeyboardButton(date, callback_data=f"date_{date}")] for date in dates]
+    ctx.user_data["spec_slots"] = slots
+    await update.callback_query.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
     return SELECT_DATE
 
-# ----------- TIME (Добавление слотов) -----------
-
-TIME_DATE, TIME_SLOTS = range(2)
-TIME_OPTIONS = [f"{h:02d}:00" for h in range(8, 23)]  # 08:00 - 22:00
-
-async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now()
-    dates = [(today + timedelta(days=i)).strftime('%d.%m.%y') for i in range(7)]
-    kb = [[InlineKeyboardButton(d, callback_data=f"time_date_{d}")] for d in dates]
-    await update.message.reply_text(
-        "Выберите дату:",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    ctx.user_data['chosen_slots'] = []
-    return TIME_DATE
-
-async def time_pick_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    picked_date = update.callback_query.data.replace("time_date_", "")
-    ctx.user_data['picked_date'] = picked_date
-    kb = [
-        [InlineKeyboardButton(f"{'✅ ' if f'{picked_date} {t}' in ctx.user_data['chosen_slots'] else ''}{t}",
-                              callback_data=f"time_slot_{t}")]
-        for t in TIME_OPTIONS
-    ]
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
-    await update.callback_query.message.reply_text(
-        f"Выбрана дата {picked_date}. Теперь выбери время (можно несколько):",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return TIME_SLOTS
-
-async def time_pick_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    picked_time = update.callback_query.data.replace("time_slot_", "")
-    picked_date = ctx.user_data['picked_date']
-    slot = f"{picked_date} {picked_time}"
-    chosen = ctx.user_data.get('chosen_slots', [])
-    if slot in chosen:
-        chosen.remove(slot)
-    else:
-        chosen.append(slot)
-    ctx.user_data['chosen_slots'] = chosen
-    kb = [
-        [InlineKeyboardButton(f"{'✅ ' if f'{picked_date} {t}' in chosen else ''}{t}",
-                              callback_data=f"time_slot_{t}")]
-        for t in TIME_OPTIONS
-    ]
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
-    await update.callback_query.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return TIME_SLOTS
-
-async def time_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    telegram_id = update.effective_user.id
-    ws, row_num, row = get_specialist_row(telegram_id)
-    if not row_num:
-        await update.callback_query.message.reply_text("Ошибка: вы не зарегистрированы как эксперт.")
+async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    date = update.callback_query.data.split('_', 1)[1]
+    spec = ctx.user_data['selected_specialist']
+    slots = ctx.user_data.get("spec_slots", [])
+    # Оставляем только нужную дату
+    times = sorted([s.split(" ")[1] for s in slots if s.startswith(date)])
+    if not times:
+        await update.callback_query.message.reply_text("Нет свободного времени на этот день")
         return ConversationHandler.END
-    chosen = ctx.user_data.get('chosen_slots', [])
-    if not chosen:
-        await update.callback_query.message.reply_text("Вы не выбрали ни одного времени.")
-        return ConversationHandler.END
-    cur_slots = ws.cell(row_num, 9).value or ''
-    slots = [s.strip() for s in cur_slots.split(';') if s.strip()]
-    for slot in chosen:
-        if slot not in slots:
-            slots.append(slot)
-    ws.update_cell(row_num, 9, ';'.join(slots))
-    await update.callback_query.message.reply_text("Слоты успешно добавлены!")
+    kb = [[InlineKeyboardButton(t, callback_data=f"time_{t}")] for t in times]
+    ctx.user_data["selected_date"] = date
+    await update.callback_query.message.reply_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
+    return SELECT_TIME
+
+async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    time = update.callback_query.data.split('_', 1)[1]
+    spec = ctx.user_data['selected_specialist']
+    date = ctx.user_data["selected_date"]
+    slot_str = f"{date} {time}"
+    # Записываем заявку
+    ws_orders.append_row([
+        datetime.now().isoformat(),
+        spec['ФИО эксперта'],
+        spec['Город'],
+        spec['сфера'],
+        spec['описание'],
+        spec['Telegram ID'],
+        update.effective_user.id,
+        update.effective_user.username or '',
+        slot_str
+    ])
+    # Удаляем слот из таблицы Эксперты
+    remove_slot(spec['Telegram ID'], slot_str)
+    await update.callback_query.message.reply_text(f"Запись на {slot_str} оформлена!")
     return ConversationHandler.END
 
-# ----------- Handlers -----------
 reg_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(cb_register_expert, pattern="register_expert")],
     states={
@@ -264,23 +245,12 @@ consult_conv = ConversationHandler(
         SELECT_REGION: [CallbackQueryHandler(cb_region, pattern=r"^region_")],
         SELECT_FIELD: [CallbackQueryHandler(cb_field, pattern=r"^field_")],
         SELECT_SPEC: [CallbackQueryHandler(cb_spec, pattern=r"^spec_")],
+        SELECT_DATE: [CallbackQueryHandler(cb_date, pattern=r"^date_")],
+        SELECT_TIME: [CallbackQueryHandler(cb_time, pattern=r"^time_")]
     },
     fallbacks=[]
 )
 
-time_conv = ConversationHandler(
-    entry_points=[CommandHandler("time", time_start)],
-    states={
-        TIME_DATE: [CallbackQueryHandler(time_pick_date, pattern=r"^time_date_")],
-        TIME_SLOTS: [
-            CallbackQueryHandler(time_pick_slot, pattern=r"^time_slot_"),
-            CallbackQueryHandler(time_confirm, pattern=r"^time_confirm$"),
-        ],
-    },
-    fallbacks=[]
-)
-
-# --- Flask health-check
 app = Flask(__name__)
 
 @app.route("/", methods=["GET", "HEAD"])
@@ -291,9 +261,6 @@ application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(reg_conv)
 application.add_handler(consult_conv)
-application.add_handler(time_conv)
 
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": PORT}, daemon=True).start()
     application.run_polling()
