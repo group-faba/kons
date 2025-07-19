@@ -193,12 +193,14 @@ consult_conv = ConversationHandler(
     fallbacks=[]
 )
 
+# --- ВСТАВЛЯЕМ health-check через Flask ---
 app = Flask(__name__)
 
 @app.route("/", methods=["GET", "HEAD"])
 def health():
     return "OK", 200
 
+# --- Запуск Telegram Bot ---
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(reg_conv)
