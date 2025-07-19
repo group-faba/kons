@@ -280,6 +280,7 @@ time_conv = ConversationHandler(
     fallbacks=[]
 )
 
+# --- Flask health-check
 app = Flask(__name__)
 
 @app.route("/", methods=["GET", "HEAD"])
@@ -293,4 +294,6 @@ application.add_handler(consult_conv)
 application.add_handler(time_conv)
 
 if __name__ == "__main__":
+    import threading
+    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": PORT}, daemon=True).start()
     application.run_polling()
