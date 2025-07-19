@@ -45,28 +45,15 @@ def get_specialists():
         specialists.append(spec)
     return specialists
 
-def get_specialist_row(telegram_id):
+def get_specialist_row_by_name(fio):
     records = ws_experts.get_all_records()
     for i, row in enumerate(records, 2):
-        if str(row.get('Telegram ID')) == str(telegram_id):
+        if str(row.get('ФИО эксперта')).strip() == fio.strip():
             return ws_experts, i, row
     return None, None, None
 
-def add_slots_for_specialist(telegram_id, date, times):
-    ws, row_num, _ = get_specialist_row(telegram_id)
-    if not row_num:
-        return False
-    cur_slots = ws.cell(row_num, 9).value or ''
-    cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
-    for t in times:
-        slot = f"{date} {t}"
-        if slot not in cur_list:
-            cur_list.append(slot)
-    ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
-    return True
-
-def remove_slot_for_specialist(telegram_id, date, time):
-    ws, row_num, _ = get_specialist_row(telegram_id)
+def remove_slot_for_specialist_by_name(fio, date, time):
+    ws, row_num, row = get_specialist_row_by_name(fio)
     if not row_num:
         return False
     cur_slots = ws.cell(row_num, 9).value or ''
@@ -155,7 +142,6 @@ async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     date = update.callback_query.data.split('_', 2)[2]
     ctx.user_data['selected_date'] = date
-    # Время с 08:00 до 22:00 с шагом 1 час
     times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
     kb = [[InlineKeyboardButton(t, callback_data=f"time_select_{t}")] for t in times]
     kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
@@ -179,14 +165,28 @@ async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]))
     return TIME_SELECT
 
+def add_slots_for_specialist_by_name(fio, date, times):
+    ws, row_num, _ = get_specialist_row_by_name(fio)
+    if not row_num:
+        return False
+    cur_slots = ws.cell(row_num, 9).value or ''
+    cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
+    for t in times:
+        slot = f"{date} {t}"
+        if slot not in cur_list:
+            cur_list.append(slot)
+    ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
+    return True
+
 async def time_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     date = ctx.user_data.get('selected_date')
     times = ctx.user_data.get('selected_times', [])
+    fio = update.effective_user.full_name
     if not date or not times:
         await update.callback_query.message.reply_text("Выберите дату и время!")
         return ConversationHandler.END
-    add_slots_for_specialist(update.effective_user.id, date, times)
+    add_slots_for_specialist_by_name(fio, date, times)
     await update.callback_query.message.reply_text(
         f"Слоты для {date} добавлены: {', '.join(times)}"
     )
@@ -237,25 +237,25 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     dates = sorted(set([slot.split()[0] for slot in spec['slots']]))
     kb = [[InlineKeyboardButton(date, callback_data=f"date_{date}")] for date in dates]
     await update.callback_query.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['fio_expert'] = spec['ФИО эксперта']
+    ctx.user_data['slots_of_expert'] = spec['slots']
     return SELECT_DATE
 
 async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     date = update.callback_query.data.split('_', 1)[1]
-    spec = ctx.user_data['selected_specialist']
-    slots = [slot for slot in spec['slots'] if slot.startswith(date)]
-    times = [slot.split()[1] for slot in slots]
+    times = [slot.split()[1] for slot in ctx.user_data['slots_of_expert'] if slot.startswith(date)]
     kb = [[InlineKeyboardButton(time, callback_data=f"time_{time}")] for time in times]
     await update.callback_query.message.reply_text(f"Выберите время для {date}:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['selected_date'] = date
-    ctx.user_data['selected_times'] = times
     return SELECT_TIME
 
 async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     time = update.callback_query.data.split('_', 1)[1]
-    spec = ctx.user_data['selected_specialist']
     date = ctx.user_data['selected_date']
-    remove_slot_for_specialist(spec['Telegram ID'], date, time)
-    await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}.")
+    fio = ctx.user_data['fio_expert']
+    # Удаляем слот
+    remove_slot_for_specialist_by_name(fio, date, time)
+    await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}. Слот удален из таблицы.")
     return ConversationHandler.END
 
 # --- Flask health-check для Render ---
