@@ -3,12 +3,12 @@ import json
 import logging
 import gspread
 from google.oauth2.service_account import Credentials
-from flask import Flask, request
+from flask import Flask
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
     ConversationHandler, ContextTypes, filters
 )
 from datetime import datetime
@@ -64,8 +64,10 @@ def add_slots_for_specialist(telegram_id, date, times):
     ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
     return True
 
+# --- Conversation constants
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 SELECT_REGION, SELECT_FIELD, SELECT_SPEC, SELECT_DATE, SELECT_TIME = range(5)
+TIME_DATE, TIME_SLOT = range(2)
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
@@ -77,6 +79,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
+# --- Регистрация эксперта ---
 async def cb_register_expert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.message.reply_text("Введите ваше ФИО:")
@@ -122,6 +125,7 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Регистрация отменена.")
     return ConversationHandler.END
 
+# --- Консультации ---
 async def cb_need_consult(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     specialists = get_specialists()
@@ -138,7 +142,6 @@ async def cb_region(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['selected_region'] = region
     kb = [[InlineKeyboardButton(field, callback_data=f"field_{field}")] for field in fields]
     await update.callback_query.message.reply_text(f"Регион: {region}\nВыберите сферу:", reply_markup=InlineKeyboardMarkup(kb))
-    ctx.user_data['filtered_fields'] = fields
     return SELECT_FIELD
 
 async def cb_field(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -167,6 +170,36 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back")]]))
     return SELECT_DATE
 
+# --- Добавление слотов (команда /time для эксперта) ---
+async def time_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("На какой день недели вы хотите добавить слот? Введите дату в формате YYYY-MM-DD:")
+    return TIME_DATE
+
+async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data['selected_date'] = update.message.text.strip()
+    await update.message.reply_text("Введите время (например, 14:00):")
+    return TIME_SLOT
+
+async def time_slot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    ws, row_num, row = get_specialist_row(telegram_id)
+    if not row_num:
+        await update.message.reply_text("Ошибка: вы не зарегистрированы как эксперт.")
+        return ConversationHandler.END
+    date = ctx.user_data['selected_date']
+    time = update.message.text.strip()
+    slot = f"{date} {time}"
+    cur_slots = ws.cell(row_num, 9).value or ''
+    slots = [s.strip() for s in cur_slots.split(';') if s.strip()]
+    if slot in slots:
+        await update.message.reply_text("Такое время уже добавлено.")
+    else:
+        slots.append(slot)
+        ws.update_cell(row_num, 9, ';'.join(slots))
+        await update.message.reply_text(f"Слот {slot} добавлен!")
+    return ConversationHandler.END
+
+# --- Handlers для Conversation
 reg_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(cb_register_expert, pattern="register_expert")],
     states={
@@ -189,31 +222,29 @@ consult_conv = ConversationHandler(
     fallbacks=[]
 )
 
-# Flask app для health check и вебхука
+time_conv = ConversationHandler(
+    entry_points=[CommandHandler("time", time_start)],
+    states={
+        TIME_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, time_date)],
+        TIME_SLOT: [MessageHandler(filters.TEXT & ~filters.COMMAND, time_slot)],
+    },
+    fallbacks=[],
+)
+
+# --- Flask health-check
 app = Flask(__name__)
 
 @app.route("/", methods=["GET", "HEAD"])
 def health():
     return "OK", 200
 
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    application.update_queue.put_nowait(update)
-    return "ok", 200
-
-# Запуск Telegram бота с webook
-from telegram import Bot
-bot = Bot(TOKEN)
-application = Application.builder().token(TOKEN).build()
+application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(reg_conv)
 application.add_handler(consult_conv)
+application.add_handler(time_conv)
 
 if __name__ == "__main__":
-    # Устанавливаем вебхук (адрес заменить на твой домен Render)
-    WEBHOOK_URL = f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}/{TOKEN}"
-    bot.delete_webhook()
-    bot.set_webhook(WEBHOOK_URL)
-    # Запускаем Flask
-    app.run(host="0.0.0.0", port=PORT)
+    import threading
+    threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": PORT}, daemon=True).start()
+    application.run_polling()
