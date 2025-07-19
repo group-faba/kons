@@ -19,7 +19,7 @@ SHEET_ID   = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 PORT       = int(os.environ.get('PORT', '8080'))
 
-# Google Sheets подключение
+# Google Sheets
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
 gc = gspread.authorize(creds)
@@ -52,54 +52,48 @@ def get_specialist_row(telegram_id):
             return ws_experts, i, row
     return None, None, None
 
-def add_slots_for_specialist(telegram_id, slots_to_add):
+def add_slots_for_specialist(telegram_id, date, times):
     ws, row_num, _ = get_specialist_row(telegram_id)
     if not row_num:
         return False
     cur_slots = ws.cell(row_num, 9).value or ''
     cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
-    for slot in slots_to_add:
+    for t in times:
+        slot = f"{date} {t}"
         if slot not in cur_list:
             cur_list.append(slot)
     ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
     return True
 
-def remove_slot(telegram_id, slot):
+def remove_slot_for_specialist(telegram_id, date, time):
     ws, row_num, _ = get_specialist_row(telegram_id)
     if not row_num:
         return False
-    slots = ws.cell(row_num, 9).value or ''
-    slots_list = [s.strip() for s in slots.split(';') if s.strip()]
-    if slot in slots_list:
-        slots_list.remove(slot)
-    ws.update_cell(row_num, 9, ';'.join(slots_list))
+    cur_slots = ws.cell(row_num, 9).value or ''
+    cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
+    slot = f"{date} {time}"
+    if slot in cur_list:
+        cur_list.remove(slot)
+    ws.update_cell(row_num, 9, ';'.join(cur_list))
     return True
 
-# --- Flask health-check
-app = Flask(__name__)
-
-@app.route("/", methods=["GET", "HEAD"])
-def health():
-    return "OK", 200
-
-# --- ConversationHandler states
+# Константы для ConversationHandler
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 SELECT_REGION, SELECT_FIELD, SELECT_SPEC, SELECT_DATE, SELECT_TIME = range(5)
-TIME_DATE, TIME_HOUR, TIME_CONFIRM = range(3)
+TIME_DATE, TIME_SELECT = range(2)
 
-# --- START
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
         [InlineKeyboardButton("Нужна консультация", callback_data="need_consult")],
         [InlineKeyboardButton("Зарегистрироваться как эксперт", callback_data="register_expert")],
-        [InlineKeyboardButton("Добавить свободное время", callback_data="add_time")]
+        [InlineKeyboardButton("Добавить время (слот)", callback_data="add_time")]
     ]
     await update.message.reply_text(
         "Добро пожаловать! Что вы хотите сделать?",
         reply_markup=InlineKeyboardMarkup(kb)
     )
 
-# --- Регистрация эксперта
+# Блок регистрации эксперта
 async def cb_register_expert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.message.reply_text("Введите ваше ФИО:")
@@ -145,72 +139,60 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Регистрация отменена.")
     return ConversationHandler.END
 
-# --- Добавить время эксперту
+# --- Добавление времени (слотов) экспертом ---
 async def cb_add_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    ctx.user_data['chosen_slots'] = []
-    # Список дат на неделю вперед
     today = datetime.now()
-    kb = []
-    for i in range(7):
-        date = (today + timedelta(days=i)).strftime("%d.%m.%y")
-        kb.append([InlineKeyboardButton(date, callback_data=f"time_date_{date}")])
+    dates = [(today + timedelta(days=i)).strftime("%d.%m.%y") for i in range(7)]
+    kb = [[InlineKeyboardButton(date, callback_data=f"time_date_{date}")] for date in dates]
     await update.callback_query.message.reply_text(
-        "Выберите дату для добавления времени:",
+        "Выберите дату для добавления слотов:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
     return TIME_DATE
 
-async def time_select_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    date = update.callback_query.data.split('_')[-1]
+    date = update.callback_query.data.split('_', 2)[2]
     ctx.user_data['selected_date'] = date
-    hours = [f"{h:02d}:00" for h in range(8, 23)]
-    kb = [[InlineKeyboardButton(hour, callback_data=f"time_hour_{hour}")] for hour in hours]
+    # Время с 08:00 до 22:00 с шагом 1 час
+    times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
+    kb = [[InlineKeyboardButton(t, callback_data=f"time_select_{t}")] for t in times]
     kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
+    ctx.user_data['selected_times'] = []
     await update.callback_query.message.reply_text(
-        f"Выбрана дата: {date}\nВыберите часы (можно несколько):",
+        f"Выберите время для {date}:",
         reply_markup=InlineKeyboardMarkup(kb)
     )
-    return TIME_HOUR
+    return TIME_SELECT
 
-async def time_select_hour(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    hour = update.callback_query.data.split('_')[-1]
-    date = ctx.user_data['selected_date']
-    slot = f"{date} {hour}"
-    chosen = ctx.user_data.get('chosen_slots', [])
-    if slot in chosen:
-        chosen.remove(slot)
-    else:
-        chosen.append(slot)
-    ctx.user_data['chosen_slots'] = chosen
-    # Перерисовать кнопки с галочками
-    hours = [f"{h:02d}:00" for h in range(8, 23)]
-    kb = []
-    for h in hours:
-        text = f"✅ {h}" if f"{date} {h}" in chosen else h
-        kb.append([InlineKeyboardButton(text, callback_data=f"time_hour_{h}")])
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
-    await update.callback_query.message.edit_text(
-        f"Выбрана дата: {date}\nВыберите часы (можно несколько):",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return TIME_HOUR
+    time = update.callback_query.data.split('_', 2)[2]
+    selected_times = ctx.user_data.get('selected_times', [])
+    if time not in selected_times:
+        selected_times.append(time)
+    ctx.user_data['selected_times'] = selected_times
+    await update.callback_query.message.reply_text(f"Время {time} выбрано. Можно выбрать еще или подтвердить.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Подтвердить", callback_data="time_confirm")]
+        ]))
+    return TIME_SELECT
 
 async def time_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    chosen = ctx.user_data.get('chosen_slots', [])
-    if not chosen:
-        await update.callback_query.message.reply_text("Вы не выбрали время.")
+    date = ctx.user_data.get('selected_date')
+    times = ctx.user_data.get('selected_times', [])
+    if not date or not times:
+        await update.callback_query.message.reply_text("Выберите дату и время!")
         return ConversationHandler.END
-    add_slots_for_specialist(update.effective_user.id, chosen)
+    add_slots_for_specialist(update.effective_user.id, date, times)
     await update.callback_query.message.reply_text(
-        f"Время добавлено: {', '.join(chosen)}"
+        f"Слоты для {date} добавлены: {', '.join(times)}"
     )
     return ConversationHandler.END
 
-# --- Блок консультаций
+# --- Блок консультаций (запись пользователя) ---
 async def cb_need_consult(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     specialists = get_specialists()
@@ -251,63 +233,39 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.callback_query.message.reply_text(text)
-    # Кнопки по датам — только даты, которые есть у этого эксперта
-    dates = sorted(set(s.split()[0] for s in spec['slots']))
-    kb = [[InlineKeyboardButton(d, callback_data=f"specdate_{d}")] for d in dates]
+    # Показываем доступные даты из слотов специалиста
+    dates = sorted(set([slot.split()[0] for slot in spec['slots']]))
+    kb = [[InlineKeyboardButton(date, callback_data=f"date_{date}")] for date in dates]
     await update.callback_query.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
     return SELECT_DATE
 
-async def cb_specdate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     date = update.callback_query.data.split('_', 1)[1]
     spec = ctx.user_data['selected_specialist']
-    # Все слоты этого специалиста на выбранную дату
     slots = [slot for slot in spec['slots'] if slot.startswith(date)]
     times = [slot.split()[1] for slot in slots]
-    kb = [[InlineKeyboardButton(t, callback_data=f"choose_time_{t}")] for t in times]
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm_user")])
+    kb = [[InlineKeyboardButton(time, callback_data=f"time_{time}")] for time in times]
+    await update.callback_query.message.reply_text(f"Выберите время для {date}:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['selected_date'] = date
-    ctx.user_data['selected_times'] = []
-    await update.callback_query.message.reply_text("Выберите время:", reply_markup=InlineKeyboardMarkup(kb))
+    ctx.user_data['selected_times'] = times
     return SELECT_TIME
 
-async def cb_choose_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    t = update.callback_query.data.split('_', 2)[2]
-    selected = ctx.user_data.get('selected_times', [])
-    if t in selected:
-        selected.remove(t)
-    else:
-        selected.append(t)
-    ctx.user_data['selected_times'] = selected
-    # Перерисовать кнопки с галочками
-    kb = []
-    for tt in selected:
-        kb.append([InlineKeyboardButton(f"✅ {tt}", callback_data=f"choose_time_{tt}")])
-    await update.callback_query.message.edit_text(
-        "Выбранное время (ещё раз нажмите, чтобы убрать):",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return SELECT_TIME
-
-async def cb_time_confirm_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    times = ctx.user_data.get('selected_times', [])
-    if not times:
-        await update.callback_query.message.reply_text("Вы не выбрали время.")
-        return ConversationHandler.END
-    date = ctx.user_data['selected_date']
+async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    time = update.callback_query.data.split('_', 1)[1]
     spec = ctx.user_data['selected_specialist']
-    for t in times:
-        slot = f"{date} {t}"
-        remove_slot(spec['Telegram ID'], slot)
-        ws_orders.append_row([
-            datetime.now().isoformat(),
-            update.effective_user.full_name,
-            spec['ФИО эксперта'],
-            date, t
-        ])
-    await update.callback_query.message.reply_text(f"Вы записались к специалисту: {spec['ФИО эксперта']} на {date} {', '.join(times)}")
+    date = ctx.user_data['selected_date']
+    remove_slot_for_specialist(spec['Telegram ID'], date, time)
+    await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}.")
     return ConversationHandler.END
 
-# --- Conversation Handlers
+# --- Flask health-check для Render ---
+app = Flask(__name__)
+
+@app.route("/", methods=["GET", "HEAD"])
+def health():
+    return "OK", 200
+
+# --- Handlers ---
 reg_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(cb_register_expert, pattern="register_expert")],
     states={
@@ -326,11 +284,8 @@ consult_conv = ConversationHandler(
         SELECT_REGION: [CallbackQueryHandler(cb_region, pattern=r"^region_")],
         SELECT_FIELD: [CallbackQueryHandler(cb_field, pattern=r"^field_")],
         SELECT_SPEC: [CallbackQueryHandler(cb_spec, pattern=r"^spec_")],
-        SELECT_DATE: [CallbackQueryHandler(cb_specdate, pattern=r"^specdate_")],
-        SELECT_TIME: [
-            CallbackQueryHandler(cb_choose_time, pattern=r"^choose_time_"),
-            CallbackQueryHandler(cb_time_confirm_user, pattern=r"time_confirm_user")
-        ]
+        SELECT_DATE: [CallbackQueryHandler(cb_date, pattern=r"^date_")],
+        SELECT_TIME: [CallbackQueryHandler(cb_time, pattern=r"^time_")],
     },
     fallbacks=[]
 )
@@ -338,14 +293,15 @@ consult_conv = ConversationHandler(
 time_conv = ConversationHandler(
     entry_points=[CallbackQueryHandler(cb_add_time, pattern="add_time")],
     states={
-        TIME_DATE: [CallbackQueryHandler(time_select_date, pattern=r"time_date_")],
-        TIME_HOUR: [CallbackQueryHandler(time_select_hour, pattern=r"time_hour_"),
-                    CallbackQueryHandler(time_confirm, pattern=r"time_confirm")]
+        TIME_DATE: [CallbackQueryHandler(time_date, pattern=r"^time_date_")],
+        TIME_SELECT: [
+            CallbackQueryHandler(time_select, pattern=r"^time_select_"),
+            CallbackQueryHandler(time_confirm, pattern="time_confirm"),
+        ]
     },
     fallbacks=[]
 )
 
-# --- Start bot + Flask health-check
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(reg_conv)
