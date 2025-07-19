@@ -207,6 +207,17 @@ time_conv = ConversationHandler(
     fallbacks=[]
 )
 
+def remove_slot(telegram_id, slot):
+    ws, row_num, row = get_specialist_row(telegram_id)
+    if not row_num:
+        return False
+    slots = ws.cell(row_num, 9).value or ''
+    slots_list = [s.strip() for s in slots.split(';') if s.strip()]
+    if slot in slots_list:
+        slots_list.remove(slot)
+    ws.update_cell(row_num, 9, ';'.join(slots_list))
+    return True
+
 # --- Блок консультаций для пользователя
 async def cb_need_consult(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
