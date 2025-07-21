@@ -20,7 +20,6 @@ SHEET_ID   = os.environ['SHEET_ID']
 CREDS_JSON = json.loads(os.environ['GSPREAD_CREDENTIALS_JSON'])
 PORT       = int(os.environ.get('PORT', '8080'))
 
-# Google Sheets
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 creds = Credentials.from_service_account_info(CREDS_JSON, scopes=SCOPES)
 gc = gspread.authorize(creds)
@@ -65,10 +64,18 @@ def remove_slot_for_specialist_by_name(fio, date, time):
     ws.update_cell(row_num, 9, ';'.join(cur_list))
     return True
 
-# Константы для ConversationHandler
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 SELECT_REGION, SELECT_FIELD, SELECT_SPEC, SELECT_DATE, SELECT_TIME = range(5)
 TIME_DATE, TIME_SELECT = range(2)
+
+# --- Фолбэк, чтобы можно было всегда сбросить диалог
+async def fallback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        await update.message.reply_text("❌ Действие отменено. Главное меню.")
+    elif update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.message.reply_text("❌ Действие отменено. Главное меню.")
+    return ConversationHandler.END
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = [
@@ -80,6 +87,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "Добро пожаловать! Что вы хотите сделать?",
         reply_markup=InlineKeyboardMarkup(kb)
     )
+    return ConversationHandler.END
 
 # Блок регистрации эксперта
 async def cb_register_expert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -254,12 +262,11 @@ async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     time = update.callback_query.data.split('_', 1)[1]
     date = ctx.user_data['selected_date']
     fio = ctx.user_data['fio_expert']
-    # Удаляем слот
     remove_slot_for_specialist_by_name(fio, date, time)
     await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}. Слот удален из таблицы.")
     return ConversationHandler.END
 
-# --- Flask health-check для Render ---
+# --- Flask health-check ---
 app = Flask(__name__)
 
 @app.route("/", methods=["GET", "HEAD"])
@@ -276,7 +283,10 @@ reg_conv = ConversationHandler(
         REG_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_desc)],
         REG_PHOTO: [MessageHandler(filters.PHOTO, reg_photo)]
     },
-    fallbacks=[CommandHandler("cancel", reg_cancel)],
+    fallbacks=[
+        CommandHandler("cancel", fallback),
+        CommandHandler("start", fallback),
+    ],
 )
 
 consult_conv = ConversationHandler(
@@ -288,7 +298,10 @@ consult_conv = ConversationHandler(
         SELECT_DATE: [CallbackQueryHandler(cb_date, pattern=r"^date_")],
         SELECT_TIME: [CallbackQueryHandler(cb_time, pattern=r"^time_")],
     },
-    fallbacks=[]
+    fallbacks=[
+        CommandHandler("cancel", fallback),
+        CommandHandler("start", fallback),
+    ],
 )
 
 time_conv = ConversationHandler(
@@ -300,7 +313,10 @@ time_conv = ConversationHandler(
             CallbackQueryHandler(time_confirm, pattern="time_confirm"),
         ]
     },
-    fallbacks=[]
+    fallbacks=[
+        CommandHandler("cancel", fallback),
+        CommandHandler("start", fallback),
+    ],
 )
 
 application = ApplicationBuilder().token(TOKEN).build()
@@ -310,6 +326,5 @@ application.add_handler(consult_conv)
 application.add_handler(time_conv)
 
 if __name__ == "__main__":
-    import threading
     threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": PORT}, daemon=True).start()
     application.run_polling()
