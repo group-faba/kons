@@ -68,7 +68,7 @@ REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
 SELECT_REGION, SELECT_FIELD, SELECT_SPEC, SELECT_DATE, SELECT_TIME = range(5)
 TIME_DATE, TIME_SELECT = range(2)
 
-# --- Фолбэк, чтобы можно было всегда сбросить диалог
+# --- Фолбэк для сброса диалога
 async def fallback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text("❌ Действие отменено. Главное меню.")
@@ -89,7 +89,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# Блок регистрации эксперта
+# Регистрация эксперта
 async def cb_register_expert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.message.reply_text("Введите ваше ФИО:")
@@ -135,7 +135,15 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Регистрация отменена.")
     return ConversationHandler.END
 
-# --- Добавление времени (слотов) экспертом ---
+# --- ВЫБОР СЛОТОВ С ГАЛОЧКАМИ --- 
+def build_time_keyboard(times, selected):
+    kb = []
+    for t in times:
+        label = f"✅ {t}" if t in selected else t
+        kb.append([InlineKeyboardButton(label, callback_data=f"time_select_{t}")])
+    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
+    return InlineKeyboardMarkup(kb)
+
 async def cb_add_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     today = datetime.now()
@@ -152,12 +160,11 @@ async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     date = update.callback_query.data.split('_', 2)[2]
     ctx.user_data['selected_date'] = date
     times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
-    kb = [[InlineKeyboardButton(t, callback_data=f"time_select_{t}")] for t in times]
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
-    ctx.user_data['selected_times'] = []
+    ctx.user_data['selected_times'] = ctx.user_data.get('selected_times', [])
+    kb = build_time_keyboard(times, ctx.user_data['selected_times'])
     await update.callback_query.message.reply_text(
         f"Выберите время для {date}:",
-        reply_markup=InlineKeyboardMarkup(kb)
+        reply_markup=kb
     )
     return TIME_SELECT
 
@@ -165,13 +172,15 @@ async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     time = update.callback_query.data.split('_', 2)[2]
     selected_times = ctx.user_data.get('selected_times', [])
-    if time not in selected_times:
+    if time in selected_times:
+        selected_times.remove(time)
+    else:
         selected_times.append(time)
     ctx.user_data['selected_times'] = selected_times
-    await update.callback_query.message.reply_text(f"Время {time} выбрано. Можно выбрать еще или подтвердить.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Подтвердить", callback_data="time_confirm")]
-        ]))
+    times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
+    kb = build_time_keyboard(times, selected_times)
+    # Редактируем клавиатуру, не создавая новое сообщение
+    await update.callback_query.edit_message_reply_markup(reply_markup=kb)
     return TIME_SELECT
 
 def add_slots_for_specialist_by_name(fio, date, times):
