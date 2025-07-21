@@ -331,13 +331,13 @@ time_conv = ConversationHandler(
         CommandHandler("start", fallback),
     ],
 )
+application.add_handler(time_conv)
 
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("time", cb_add_time))
 application.add_handler(reg_conv)
 application.add_handler(consult_conv)
-application.add_handler(time_conv)
 
 if __name__ == "__main__":
     threading.Thread(target=app.run, kwargs={"host": "0.0.0.0", "port": PORT}, daemon=True).start()
