@@ -334,6 +334,7 @@ time_conv = ConversationHandler(
 
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("time", cb_add_time))
 application.add_handler(reg_conv)
 application.add_handler(consult_conv)
 application.add_handler(time_conv)
