@@ -45,16 +45,32 @@ def get_specialists():
         specialists.append(spec)
     return specialists
 
-def get_specialist_row_by_name(fio):
+def get_specialist_row_by_telegram_id(telegram_id):
     records = ws_experts.get_all_records()
     for i, row in enumerate(records, 2):
-        if str(row.get('ФИО эксперта')).strip() == fio.strip():
+        if str(row.get('Telegram ID')).strip() == str(telegram_id):
             return ws_experts, i, row
     return None, None, None
 
-def remove_slot_for_specialist_by_name(fio, date, time):
-    ws, row_num, row = get_specialist_row_by_name(fio)
+def add_slots_for_specialist_by_id(telegram_id, date, times):
+    ws, row_num, _ = get_specialist_row_by_telegram_id(telegram_id)
     if not row_num:
+        print(f"Не найден эксперт с Telegram ID: {telegram_id}")
+        return False
+    cur_slots = ws.cell(row_num, 9).value or ''
+    cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
+    for t in times:
+        slot = f"{date} {t}"
+        if slot not in cur_list:
+            cur_list.append(slot)
+    ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
+    print(f"Добавлены слоты для {telegram_id}: {date} {times}")
+    return True
+
+def remove_slot_for_specialist_by_id(telegram_id, date, time):
+    ws, row_num, _ = get_specialist_row_by_telegram_id(telegram_id)
+    if not row_num:
+        print(f"Не найден эксперт с Telegram ID: {telegram_id}")
         return False
     cur_slots = ws.cell(row_num, 9).value or ''
     cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
@@ -62,6 +78,7 @@ def remove_slot_for_specialist_by_name(fio, date, time):
     if slot in cur_list:
         cur_list.remove(slot)
     ws.update_cell(row_num, 9, ';'.join(cur_list))
+    print(f"Удален слот для {telegram_id}: {slot}")
     return True
 
 REG_NAME, REG_CITY, REG_FIELD, REG_DESC, REG_PHOTO = range(5)
@@ -135,7 +152,7 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Регистрация отменена.")
     return ConversationHandler.END
 
-# --- ВЫБОР СЛОТОВ С ГАЛОЧКАМИ --- 
+# --- ВЫБОР СЛОТОВ С ГАЛОЧКАМИ ---
 def build_time_keyboard(times, selected):
     kb = []
     for t in times:
@@ -183,28 +200,15 @@ async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.edit_message_reply_markup(reply_markup=kb)
     return TIME_SELECT
 
-def add_slots_for_specialist_by_name(fio, date, times):
-    ws, row_num, _ = get_specialist_row_by_name(fio)
-    if not row_num:
-        return False
-    cur_slots = ws.cell(row_num, 9).value or ''
-    cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
-    for t in times:
-        slot = f"{date} {t}"
-        if slot not in cur_list:
-            cur_list.append(slot)
-    ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
-    return True
-
 async def time_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     date = ctx.user_data.get('selected_date')
     times = ctx.user_data.get('selected_times', [])
-    fio = update.effective_user.full_name
+    telegram_id = update.effective_user.id
     if not date or not times:
         await update.callback_query.message.reply_text("Выберите дату и время!")
         return ConversationHandler.END
-    add_slots_for_specialist_by_name(fio, date, times)
+    add_slots_for_specialist_by_id(telegram_id, date, times)
     await update.callback_query.message.reply_text(
         f"Слоты для {date} добавлены: {', '.join(times)}"
     )
@@ -257,6 +261,7 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.message.reply_text("Выберите дату:", reply_markup=InlineKeyboardMarkup(kb))
     ctx.user_data['fio_expert'] = spec['ФИО эксперта']
     ctx.user_data['slots_of_expert'] = spec['slots']
+    ctx.user_data['telegram_id_expert'] = spec['Telegram ID']
     return SELECT_DATE
 
 async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -270,8 +275,8 @@ async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     time = update.callback_query.data.split('_', 1)[1]
     date = ctx.user_data['selected_date']
-    fio = ctx.user_data['fio_expert']
-    remove_slot_for_specialist_by_name(fio, date, time)
+    telegram_id_expert = ctx.user_data['telegram_id_expert']
+    remove_slot_for_specialist_by_id(telegram_id_expert, date, time)
     await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}. Слот удален из таблицы.")
     return ConversationHandler.END
 
