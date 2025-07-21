@@ -139,12 +139,15 @@ async def reg_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data['field'],
         ctx.user_data['desc'],
         file_id,
-        update.effective_user.id,   # <-- сюда ID
+        update.effective_user.id,
         update.effective_user.username or '',
         "",
         "" # Slots
     ])
-    await update.message.reply_text("✅ Вы зарегистрированы как эксперт!")
+    await update.message.reply_text(
+        "✅ Вы зарегистрированы как эксперт!\n\n"
+        "Теперь вы можете добавить время для консультаций через меню бота, либо командой /time"
+    )
     return ConversationHandler.END
 
 async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -175,8 +178,8 @@ async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     date = update.callback_query.data.split('_', 2)[2]
     ctx.user_data['selected_date'] = date
+    ctx.user_data['selected_times'] = []  # сброс выбранных времен
     times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
-    ctx.user_data['selected_times'] = ctx.user_data.get('selected_times', [])
     kb = build_time_keyboard(times, ctx.user_data['selected_times'])
     await update.callback_query.message.reply_text(
         f"Выберите время для {date}:",
