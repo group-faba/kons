@@ -155,7 +155,12 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # --- ВЫБОР СЛОТОВ С ГАЛОЧКАМИ ---
-Подтвердить", callback_data="time_confirm")])
+def build_time_keyboard(times, selected):
+    kb = []
+    for t in times:
+        label = f"✅ {t}" if t in selected else t
+        kb.append([InlineKeyboardButton(label, callback_data=f"time_select_{t}")])
+    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
     kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="time_back")])
     return InlineKeyboardMarkup(kb)
 
