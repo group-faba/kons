@@ -155,37 +155,47 @@ async def reg_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # --- ВЫБОР СЛОТОВ С ГАЛОЧКАМИ ---
-def build_time_keyboard(times, selected):
-    kb = []
-    for t in times:
-        label = f"✅ {t}" if t in selected else t
-        kb.append([InlineKeyboardButton(label, callback_data=f"time_select_{t}")])
-    kb.append([InlineKeyboardButton("Подтвердить", callback_data="time_confirm")])
+Подтвердить", callback_data="time_confirm")])
+    kb.append([InlineKeyboardButton("⬅️ Назад", callback_data="time_back")])
     return InlineKeyboardMarkup(kb)
-
-async def cb_add_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    today = datetime.now()
-    dates = [(today + timedelta(days=i)).strftime("%d.%m.%y") for i in range(7)]
-    kb = [[InlineKeyboardButton(date, callback_data=f"time_date_{date}")] for date in dates]
-    await update.callback_query.message.reply_text(
-        "Выберите дату для добавления слотов:",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
-    return TIME_DATE
 
 async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     date = update.callback_query.data.split('_', 2)[2]
     ctx.user_data['selected_date'] = date
-    ctx.user_data['selected_times'] = []  # сброс выбранных времен
     times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
+    ctx.user_data['selected_times'] = []
     kb = build_time_keyboard(times, ctx.user_data['selected_times'])
     await update.callback_query.message.reply_text(
         f"Выберите время для {date}:",
         reply_markup=kb
     )
     return TIME_SELECT
+
+async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    time = update.callback_query.data.split('_', 2)[2]
+    selected_times = ctx.user_data.get('selected_times', [])
+    if time in selected_times:
+        selected_times.remove(time)
+    else:
+        selected_times.append(time)
+    ctx.user_data['selected_times'] = selected_times
+    times = [f"{str(h).zfill(2)}:00" for h in range(8, 23)]
+    kb = build_time_keyboard(times, selected_times)
+    await update.callback_query.edit_message_reply_markup(reply_markup=kb)
+    return TIME_SELECT
+
+async def time_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    today = datetime.now()
+    dates = [(today + timedelta(days=i)).strftime("%d.%m.%y") for i in range(7)]
+    kb = [[InlineKeyboardButton(date, callback_data=f"time_date_{date}")] for date in dates]
+    await update.callback_query.message.edit_text(
+        "Выберите дату для добавления слотов:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return TIME_DATE
 
 async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
@@ -274,9 +284,28 @@ async def cb_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cb_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     time = update.callback_query.data.split('_', 1)[1]
     date = ctx.user_data['selected_date']
-    expert_id = ctx.user_data['selected_expert_id']
-    remove_slot_for_specialist_by_id(expert_id, date, time)
-    await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}. Слот удален из таблицы.")
+    fio = ctx.user_data['fio_expert']
+
+    # Получаем row специалиста
+    specialists = get_specialists()
+    row = next((s for s in specialists if s['ФИО эксперта'] == fio), None)
+    if row and 'Telegram ID' in row:
+        expert_telegram_id = row['Telegram ID']
+    else:
+        expert_telegram_id = None
+
+    remove_slot_for_specialist_by_name(fio, date, time)
+    await update.callback_query.message.reply_text(f"Вы записались к специалисту на {date} в {time}. Время удалено из таблицы.")
+
+    # --- Уведомление эксперту ---
+    if expert_telegram_id:
+        text = (
+            f"На ваш слот записался пользователь!\n\n"
+            f"Дата: {date}\nВремя: {time}\n"
+            f"Пользователь: @{update.effective_user.username or update.effective_user.full_name}"
+        )
+        await ctx.bot.send_message(chat_id=expert_telegram_id, text=text)
+
     return ConversationHandler.END
 
 # --- Flask health-check ---
@@ -324,12 +353,10 @@ time_conv = ConversationHandler(
         TIME_SELECT: [
             CallbackQueryHandler(time_select, pattern=r"^time_select_"),
             CallbackQueryHandler(time_confirm, pattern="time_confirm"),
+            CallbackQueryHandler(time_back, pattern="time_back"),
         ]
     },
-    fallbacks=[
-        CommandHandler("cancel", fallback),
-        CommandHandler("start", fallback),
-    ],
+    fallbacks=[CommandHandler("cancel", fallback)],
 )
 
 application = ApplicationBuilder().token(TOKEN).build()
