@@ -274,10 +274,15 @@ async def cb_spec(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     spec_row = update.callback_query.data.split('_', 1)[1]
     spec = ctx.user_data['filtered_specs'][spec_row]
     ctx.user_data['selected_specialist'] = spec
-    ctx.user_data['selected_expert_id'] = spec['Telegram ID']
+    ctx.user_data['fio_expert'] = spec['ФИО эксперта']   # <--- добавь это!
     text = f"{spec['ФИО эксперта']}\n{spec['описание']}"
     if spec['photo_file_id']:
         await update.callback_query.message.reply_photo(
+            photo=spec['photo_file_id'],
+            caption=text
+        )
+    else:
+        await update.callback_query.message.reply_text(text)
             photo=spec['photo_file_id'],
             caption=text
         )
