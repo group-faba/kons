@@ -172,6 +172,16 @@ async def cb_add_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return TIME_DATE
 
+async def add_time_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now()
+    dates = [(today + timedelta(days=i)).strftime("%d.%m.%y") for i in range(7)]
+    kb = [[InlineKeyboardButton(date, callback_data=f"time_date_{date}")] for date in dates]
+    await update.message.reply_text(
+        "Выберите дату для добавления слотов:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return TIME_DATE
+
 async def time_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     date = update.callback_query.data.split('_', 2)[2]
@@ -336,7 +346,10 @@ consult_conv = ConversationHandler(
 )
 
 time_conv = ConversationHandler(
-    entry_points=[CallbackQueryHandler(cb_add_time, pattern="add_time")],
+    entry_points=[
+        CallbackQueryHandler(cb_add_time, pattern="add_time"),
+        CommandHandler("time", cb_add_time),   # <-- Вот так!
+    ],
     states={
         TIME_DATE: [CallbackQueryHandler(time_date, pattern=r"^time_date_")],
         TIME_SELECT: [
@@ -350,6 +363,7 @@ time_conv = ConversationHandler(
 
 application = ApplicationBuilder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("time", add_time_cmd))
 application.add_handler(reg_conv)
 application.add_handler(consult_conv)
 application.add_handler(time_conv)
