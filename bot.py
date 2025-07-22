@@ -202,6 +202,17 @@ async def time_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return TIME_DATE
 
+async def cb_add_time(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    today = datetime.now()
+    dates = [(today + timedelta(days=i)).strftime("%d.%m.%y") for i in range(7)]
+    kb = [[InlineKeyboardButton(date, callback_data=f"time_date_{date}")] for date in dates]
+    await update.callback_query.message.reply_text(
+        "Выберите дату для добавления слотов:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return TIME_DATE
+
 async def time_select(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     time = update.callback_query.data.split('_', 2)[2]
