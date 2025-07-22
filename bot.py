@@ -40,25 +40,25 @@ def remove_slot_for_specialist_by_id(telegram_id, date, time):
     ws, row_num, row = get_specialist_row_by_id(telegram_id)
     if not row_num:
         return False
-    cur_slots = ws.cell(row_num, 9).value or ''
+    cur_slots = ws.cell(row_num, 8).value or ''   # <-- здесь 8
     cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
     slot = f"{date} {time}"
     if slot in cur_list:
         cur_list.remove(slot)
-    ws.update_cell(row_num, 9, ';'.join(cur_list))
+    ws.update_cell(row_num, 8, ';'.join(cur_list))  # <-- и здесь 8
     return True
 
 def add_slots_for_specialist_by_id(telegram_id, date, times):
     ws, row_num, _ = get_specialist_row_by_id(telegram_id)
     if not row_num:
         return False
-    cur_slots = ws.cell(row_num, 9).value or ''
+    cur_slots = ws.cell(row_num, 8).value or ''   # <-- здесь 8
     cur_list = [s.strip() for s in cur_slots.split(';') if s.strip()]
     for t in times:
         slot = f"{date} {t}"
         if slot not in cur_list:
             cur_list.append(slot)
-    ws.update_cell(row_num, 9, ';'.join(sorted(cur_list)))
+    ws.update_cell(row_num, 8, ';'.join(sorted(cur_list)))  # <-- и здесь 8
     return True
 
 # --- остальной код без изменений, просто меняем работу функций на telegram_id ---
